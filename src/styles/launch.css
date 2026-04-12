@@ -1,0 +1,282 @@
+/* Launch tab layout */
+
+.launch-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.launch-panel .panel-nested {
+  margin-top: 0;
+}
+
+.launch-panel .panel-nested + .panel-nested {
+  margin-top: 0;
+}
+
+.container-panel .panel-nested {
+  max-width: 64rem;
+}
+
+.launch-lead {
+  margin: 0 0 0.75rem;
+  font-size: 0.92rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.launch-more {
+  margin: 0 0 1rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.launch-more summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 500;
+  list-style: none;
+}
+
+.launch-more summary::-webkit-details-marker {
+  display: none;
+}
+
+.launch-more summary::before {
+  content: "▸ ";
+  display: inline-block;
+  transition: transform 0.12s ease;
+}
+
+.launch-more[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.launch-more p {
+  margin: 0.5rem 0 0;
+  padding-left: 0.35rem;
+  border-left: 2px solid var(--border);
+  line-height: 1.5;
+}
+
+.launch-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem 1rem;
+  align-items: end;
+}
+
+.container-fields {
+  grid-template-columns: 1fr;
+}
+
+@media (max-width: 640px) {
+  .launch-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+.launch-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.launch-toolbar__main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  align-items: center;
+  flex: 1 1 auto;
+}
+
+.launch-toolbar__run {
+  margin-left: auto;
+}
+
+@media (max-width: 640px) {
+  .launch-toolbar__run {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .launch-toolbar__run .btn {
+    width: 100%;
+  }
+}
+
+.launch-status-box {
+  margin-top: 1rem;
+  padding: 0.75rem 0.9rem;
+  background: color-mix(in srgb, var(--bg) 65%, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.launch-status-box .status {
+  margin: 0;
+}
+
+.launch-status-box .status + .status {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  opacity: 0.95;
+}
+
+.launch-status-box .status.status--meta {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.container-actions {
+  margin-top: 0.75rem;
+}
+
+.container-toolbar {
+  margin-top: 0;
+}
+
+.container-hint {
+  margin: 0.65rem 0 0;
+}
+
+.launch-apply-row {
+  margin-top: 0.65rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--border);
+  min-height: 0;
+}
+
+.launch-apply-row .btn {
+  width: fit-content;
+  max-width: 100%;
+}
+
+.launch-model-section .field {
+  margin-top: 0.35rem;
+}
+
+.launch-cluster {
+  margin-top: 0.75rem;
+}
+
+.launch-cluster-lead {
+  margin: 0.5rem 0 0.65rem;
+  padding-left: 0.35rem;
+  border-left: 2px solid var(--border);
+  font-size: 0.88rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.launch-cluster-enable {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0.65rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.launch-cluster-enable input {
+  margin: 0;
+}
+
+.launch-cluster-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.65rem 1rem;
+  align-items: end;
+  margin-top: 0.35rem;
+}
+
+#launch-cluster-mp-cli-fields,
+#launch-cluster-sglang-cli-fields {
+  display: contents;
+}
+
+@media (max-width: 640px) {
+  .launch-cluster-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+.launch-args-editor {
+  margin-top: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 0.7rem;
+  background: color-mix(in srgb, var(--bg) 80%, var(--surface));
+}
+
+.launch-args-list {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.launch-arg-row {
+  display: grid;
+  grid-template-columns: auto minmax(10rem, 1fr) 2fr;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.launch-arg-row code {
+  font-size: 0.8rem;
+}
+
+@media (max-width: 640px) {
+  .launch-arg-row {
+    grid-template-columns: auto 1fr;
+  }
+
+  .launch-arg-row input[type="text"] {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Shared with Logs tab toolbar */
+.launch-log-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  margin-bottom: 0.5rem;
+}
+
+/* Container tab: single vs cluster launch workflow */
+.container-stack-mode {
+  margin: 0.75rem 0 0;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg) 85%, var(--surface));
+}
+
+.container-stack-mode__legend {
+  padding: 0 0.25rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.container-stack-mode__hint {
+  margin: 0.35rem 0 0.6rem;
+  font-size: 0.82rem;
+}
+
+.container-stack-mode__radios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  align-items: center;
+}
+
+.container-stack-mode__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
