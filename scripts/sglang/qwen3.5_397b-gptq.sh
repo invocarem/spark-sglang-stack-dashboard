@@ -19,7 +19,7 @@ TOOL_CALL_PARSER="qwen3_coder"
 # Remove --disable-radix-cache (extra_buffer requires radix cache)
 # Remove --disable-cuda-graph (enable CUDA graphs)
 
-SGLANG_USE_AITER=1 sglang serve \
+SGLANG_ENABLE_SPEC_V2=true SGLANG_USE_AITER=1 sglang serve \
     --model-path ${MODEL} \
     --served-model-name ${SERVED_MODEL_NAME} \
     --context-length ${CONTEXT_LENGTH} \
