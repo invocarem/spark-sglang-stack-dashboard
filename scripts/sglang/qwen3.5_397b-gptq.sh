@@ -11,8 +11,8 @@ MAX_RUNNING_REQUESTS=3
 TENSOR_PARALLEL=2
 HOST="0.0.0.0"
 PORT=30000
-ATTENTION_BACKEND="trtllm_mha"
-FP8_GEMM_BACKEND="cutlass"
+ATTENTION_BACKEND="triton"
+FP8_GEMM_BACKEND="triton"
 TOOL_CALL_PARSER="qwen3_coder"
 
 # --mamba-scheduler-strategy extra_buffer
@@ -29,7 +29,7 @@ SGLANG_USE_AITER=1 sglang serve \
     --port ${PORT} \
     --enable-metrics \
     --watchdog-timeout 1200 \
-    --model-loader-extra-config '{"enable_multithread_load": true}' \
+    --model-loader-extra-config '{"enable_multithread_load": true, "num_threads": 8}' \
     --attention-backend ${ATTENTION_BACKEND} \
     --fp8-gemm-backend ${FP8_GEMM_BACKEND} \
     --tool-call-parser ${TOOL_CALL_PARSER} \
