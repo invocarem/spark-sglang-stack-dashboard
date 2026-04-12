@@ -3,8 +3,7 @@
 # Configuration variables
 MODEL="Qwen/Qwen3.5-397B-A17B-GPTQ-Int4"
 SERVED_MODEL_NAME="qwen3.5-397b"
-CONTEXT_LENGTH=65536
-MAX_TOTAL_TOKENS=65536
+CONTEXT_LENGTH=131072
 MEM_FRACTION_STATIC=0.94
 CHUNKED_PREFILL_SIZE=2048
 CUDA_GRAPH_MAX_BS=4
@@ -12,7 +11,7 @@ MAX_RUNNING_REQUESTS=3
 TENSOR_PARALLEL=2
 HOST="0.0.0.0"
 PORT=30000
-ATTENTION_BACKEND="flashinfer"
+ATTENTION_BACKEND="trtllm_mha"
 FP8_GEMM_BACKEND="cutlass"
 TOOL_CALL_PARSER="qwen3_coder"
 
@@ -24,7 +23,6 @@ SGLANG_USE_AITER=1 sglang serve \
     --model-path ${MODEL} \
     --served-model-name ${SERVED_MODEL_NAME} \
     --context-length ${CONTEXT_LENGTH} \
-    --max-total-tokens ${MAX_TOTAL_TOKENS} \
     --mem-fraction-static ${MEM_FRACTION_STATIC} \
     --tp-size ${TENSOR_PARALLEL} \
     --host ${HOST} \
