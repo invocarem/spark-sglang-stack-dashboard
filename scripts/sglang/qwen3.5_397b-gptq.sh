@@ -8,20 +8,19 @@ MAX_TOTAL_TOKENS=65536
 MEM_FRACTION_STATIC=0.94
 CHUNKED_PREFILL_SIZE=2048
 CUDA_GRAPH_MAX_BS=4
-MAX_RUNNING_REQUESTS=1
+MAX_RUNNING_REQUESTS=4
 TENSOR_PARALLEL=2
 HOST="0.0.0.0"
 PORT=30000
-ATTENTION_BACKEND="triton"
+ATTENTION_BACKEND="fa3"
 FP8_GEMM_BACKEND="cutlass"
 TOOL_CALL_PARSER="qwen3_coder"
-
 
 # --mamba-scheduler-strategy extra_buffer
 # Remove --disable-radix-cache (extra_buffer requires radix cache)
 # Remove --disable-cuda-graph (enable CUDA graphs)
 
-HF_HUB_OFFLINE=1 SGLANG_USE_AITER=1 SGLANG_ENABLE_SPEC_V2=True sglang serve \
+SGLANG_USE_AITER=1 sglang serve \
     --model-path ${MODEL} \
     --served-model-name ${SERVED_MODEL_NAME} \
     --context-length ${CONTEXT_LENGTH} \
@@ -36,6 +35,7 @@ HF_HUB_OFFLINE=1 SGLANG_USE_AITER=1 SGLANG_ENABLE_SPEC_V2=True sglang serve \
     --attention-backend ${ATTENTION_BACKEND} \
     --fp8-gemm-backend ${FP8_GEMM_BACKEND} \
     --tool-call-parser ${TOOL_CALL_PARSER} \
+    --load-format safetensors \
     --reasoning-parser qwen3 \
     --speculative-algorithm EAGLE3 \
     --speculative-num-steps 3 \
