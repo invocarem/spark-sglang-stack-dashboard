@@ -8,11 +8,11 @@ MAX_TOTAL_TOKENS=65536
 MEM_FRACTION_STATIC=0.94
 CHUNKED_PREFILL_SIZE=2048
 CUDA_GRAPH_MAX_BS=4
-MAX_RUNNING_REQUESTS=4
+MAX_RUNNING_REQUESTS=3
 TENSOR_PARALLEL=2
 HOST="0.0.0.0"
 PORT=30000
-ATTENTION_BACKEND="fa3"
+ATTENTION_BACKEND="flashinfer"
 FP8_GEMM_BACKEND="cutlass"
 TOOL_CALL_PARSER="qwen3_coder"
 
@@ -37,7 +37,7 @@ SGLANG_USE_AITER=1 sglang serve \
     --tool-call-parser ${TOOL_CALL_PARSER} \
     --load-format safetensors \
     --reasoning-parser qwen3 \
-    --speculative-algorithm EAGLE3 \
+    --speculative-algorithm NEXTN \
     --speculative-num-steps 3 \
     --speculative-eagle-topk 1 \
     --speculative-num-draft-tokens 4 \
