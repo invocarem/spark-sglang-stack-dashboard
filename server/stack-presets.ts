@@ -19,13 +19,21 @@ export type StackPreset = {
 
 export const STACK_PRESETS: readonly StackPreset[] = [
   {
+    id: "dgx_spark_10",
+    label: "SciTrera DGX Spark SGLang 0.5.10",
+    provider: "sglang",
+    matchesScript: "containers/sglang/run-docker.sh",
+    containerName: "sglang_node_10",
+    image: "scitrera/dgx-spark-sglang:0.5.10",
+    extraEnv: [],
+  },
+   {
     id: "dgx_spark_tf5",
-    label: "SciTrera DGX Spark SGLang (tf5)",
+    label: "SciTrera DGX Spark SGLang (tf5) dev2",
     provider: "sglang",
     matchesScript: "containers/sglang/run-docker.sh",
     containerName: "sglang_node_tf5",
     image: "scitrera/dgx-spark-sglang:0.5.9-dev2-acab24a7-t5",
-    //image: "scitrera/dgx-spark-sglang:0.5.9-t5",
     extraEnv: [],
   },
   {
@@ -36,34 +44,8 @@ export const STACK_PRESETS: readonly StackPreset[] = [
     containerName: "sglang_node",
     image: "lmsysorg/sglang:spark",
     extraEnv: ["TIKTOKEN_ENCODINGS_BASE=/tiktoken_encodings"],
-  },
-  {
-    id: "vllm_node_tf5",
-    label: "vLLM Ray head (tf5)",
-    provider: "vllm",
-    matchesScript: "containers/vllm/run-docker-tf5.sh",
-    containerName: "vllm_node_tf5",
-    image: "vllm-node-tf5:latest",
-    extraEnv: [],
-  },
-  {
-    id: "vllm_node_tf5_worker",
-    label: "vLLM Ray worker (tf5)",
-    provider: "vllm",
-    matchesScript: "containers/vllm/run-docker-tf5-worker.sh",
-    containerName: "vllm_node_tf5_worker",
-    image: "vllm-node-tf5:latest",
-    extraEnv: [],
-  },
-  {
-    id: "vllm_node",
-    label: "vLLM Node",
-    provider: "vllm",
-    matchesScript: "containers/vllm/run-docker.sh",
-    containerName: "vllm_node",
-    image: "vllm-node:latest",
-    extraEnv: [],
-  },
+  }
+ 
 ] as const;
 
 const PRESET_BY_ID = new Map(STACK_PRESETS.map((p) => [p.id, p]));

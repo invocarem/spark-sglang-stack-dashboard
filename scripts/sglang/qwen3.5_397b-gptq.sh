@@ -40,8 +40,7 @@ SGLANG_USE_AITER=1 sglang serve \
     --speculative-eagle-topk 1 \
     --speculative-num-draft-tokens 4 \
     --enable-flashinfer-allreduce-fusion \
-    --mamba-scheduler-strategy no_buffer \
-    --disable-radix-cache \ 
+    --mamba-scheduler-strategy extra_buffer \
     --quantization moe_wna16 \
     --kv-cache-dtype fp8_e4m3 \
     --max-running-requests ${MAX_RUNNING_REQUESTS} \
