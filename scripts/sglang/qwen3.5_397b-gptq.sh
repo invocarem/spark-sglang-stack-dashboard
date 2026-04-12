@@ -37,12 +37,13 @@ HF_HUB_OFFLINE=1 SGLANG_USE_AITER=1 SGLANG_ENABLE_SPEC_V2=True sglang serve \
     --fp8-gemm-backend ${FP8_GEMM_BACKEND} \
     --tool-call-parser ${TOOL_CALL_PARSER} \
     --reasoning-parser qwen3 \
-    --speculative-algorithm NEXTN \
+    --speculative-algorithm EAGLE3 \
     --speculative-num-steps 3 \
     --speculative-eagle-topk 1 \
     --speculative-num-draft-tokens 4 \
     --enable-flashinfer-allreduce-fusion \
-    --mamba-scheduler-strategy extra_buffer \
+    --mamba-scheduler-strategy no_buffer \
+    --disable-radix-cache \ 
     --quantization moe_wna16 \
     --kv-cache-dtype fp8_e4m3 \
     --max-running-requests ${MAX_RUNNING_REQUESTS} \
