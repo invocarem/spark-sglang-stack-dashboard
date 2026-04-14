@@ -12,7 +12,6 @@ TENSOR_PARALLEL=2
 HOST="0.0.0.0"
 PORT=30000
 ATTENTION_BACKEND="triton"
-FP8_GEMM_BACKEND="triton"
 TOOL_CALL_PARSER="qwen3_coder"
 
 # --mamba-scheduler-strategy extra_buffer
@@ -31,9 +30,8 @@ SGLANG_ENABLE_SPEC_V2=true SGLANG_USE_AITER=1 sglang serve \
     --watchdog-timeout 1200 \
     --model-loader-extra-config '{"enable_multithread_load": true, "num_threads": 8}' \
     --attention-backend ${ATTENTION_BACKEND} \
-    --fp8-gemm-backend ${FP8_GEMM_BACKEND} \
     --tool-call-parser ${TOOL_CALL_PARSER} \
-    --load-format safetensors \
+    --load-format fastsafetensors \
     --reasoning-parser qwen3 \
     --speculative-algorithm NEXTN \
     --speculative-num-steps 3 \
