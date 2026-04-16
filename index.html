@@ -15,10 +15,9 @@
       <details class="header-help">
         <summary>About this dashboard</summary>
         <p class="lede">
-          <strong>Container</strong> runs the stack image on the host (<code>docker run</code> / start /
-          stop). <strong>Launch</strong> runs <code>scripts/sglang/*.sh</code> inside that container to start
-          <code>sglang.launch_server</code> or <code>sglang serve</code>. Optional vLLM testing is a
-          <strong>model id</strong> for Chat/Benchmark; other tabs: Logs, Tools, metrics, benchmark, chat.
+          <strong>Starter</strong> picks a stack preset and a script under <code>scripts/sglang/*.sh</code>
+          (or vLLM). <strong>Start</strong> runs the stack and the script in one server request. Optional vLLM
+          testing uses a <strong>model id</strong> for Chat/Benchmark; other tabs: Logs, Tools, metrics, benchmark, chat.
         </p>
       </details>
     </header>
@@ -26,13 +25,9 @@
     <div class="shell">
       <div class="shell-main">
         <nav class="tabs" role="tablist" aria-label="Main tools">
-          <button type="button" role="tab" id="tab-container" aria-selected="true" aria-controls="panel-container"
-            data-tab="container">
-            Container
-          </button>
-          <button type="button" role="tab" id="tab-launch" aria-selected="false" aria-controls="panel-launch"
-            data-tab="launch">
-            Launch
+          <button type="button" role="tab" id="tab-starter" aria-selected="true" aria-controls="panel-starter"
+            data-tab="starter">
+            Starter
           </button>
           <button type="button" role="tab" id="tab-logs" aria-selected="false" aria-controls="panel-logs"
             data-tab="logs">
@@ -52,102 +47,46 @@
           </button>
         </nav>
 
-        <div id="panel-container" role="tabpanel" aria-labelledby="tab-container" class="tab-panel container-panel"
-          data-panel="container">
+        <div id="panel-starter" role="tabpanel" aria-labelledby="tab-starter" class="tab-panel launch-panel"
+          data-panel="starter">
           <section class="panel panel-nested">
-            <h2>Container Control</h2>
-            <p class="launch-lead container-lead">
-              Starts/stops the stack container on the host. Presets mirror
-              <code id="container-script-label">containers/sglang/run-docker*.sh</code> and run detached
-              (<code>sleep infinity</code>) so the
-              <strong>Launch</strong> tab can execute <code id="container-launch-script-label">scripts/sglang/*.sh</code>
-              inside it.
-            </p>
-            <details class="launch-more">
-              <summary>Host env and paths</summary>
-              <p>
-                API runs on host Docker. Optional <code>HF_TOKEN</code> is passed through. Mount root is
-                <code>MONITOR_REPO_ROOT</code> (or auto-detected). SGLang presets publish
-                <code>MONITOR_STACK_HOST_PORT</code> (default <code>30000</code>) to container port
-                <code>30000</code> (same as <code>scripts/sglang/*.sh</code>). vLLM presets default
-                <code>8000→8000</code>.
-              </p>
-            </details>
-            <div class="launch-fields container-fields">
-              <label class="field field-grow">
-                <span>Preset</span>
-                <select id="sel-stack-preset" aria-label="Stack container preset"></select>
-              </label>
-            </div>
-            <fieldset class="container-stack-mode" id="container-stack-mode-wrap" hidden>
-              <legend class="container-stack-mode__legend">Launch workflow (SGLang)</legend>
-              <p class="hint container-stack-mode__hint">
-                Same idle container either way; this syncs the <strong>Launch</strong> tab “Multi-node cluster”
-                option (exports / rank / dist). If <code>MONITOR_CLUSTER_APPLY</code> is set in
-                <code>.env</code>, this block is hidden and Launch follows <code>.env</code> only.
-                Otherwise use <strong>Single</strong> for one machine or <strong>Cluster</strong> when using
-                <code>--nnodes</code> &gt; 1 across hosts.
-              </p>
-              <div class="container-stack-mode__radios" role="group" aria-label="Single-node or cluster launch">
-                <label class="container-stack-mode__label">
-                  <input type="radio" name="container-stack-mode" id="radio-stack-mode-single" value="single" />
-                  <span>Single-node</span>
-                </label>
-                <label class="container-stack-mode__label">
-                  <input type="radio" name="container-stack-mode" id="radio-stack-mode-cluster" value="cluster" />
-                  <span>Cluster (multi-node)</span>
-                </label>
-              </div>
-            </fieldset>
-            <div class="launch-status-box container-actions">
-              <div class="launch-toolbar container-toolbar">
-                <button type="button" id="btn-stack-refresh" class="btn">Refresh</button>
-                <button type="button" id="btn-stack-run" class="btn primary">Start</button>
-                <button type="button" id="btn-stack-stop" class="btn">Stop</button>
-              </div>
-              <p class="hint container-hint">Tip: keep it running, then use the Launch tab.</p>
-              <p id="status-stack" class="status" aria-live="polite"></p>
-            </div>
-          </section>
-        </div>
-
-        <div id="panel-launch" role="tabpanel" aria-labelledby="tab-launch" class="tab-panel launch-panel hidden"
-          data-panel="launch" hidden>
-          <section class="panel panel-nested">
-            <h2 id="launch-title">Launch SGLang (<code>launch_server</code> / <code>sglang serve</code>)</h2>
+            <h2 id="launch-title">Starter — SGLang</h2>
             <p class="launch-lead">
-              After a stack container is running, pick it here and run a script from
-              <code id="launch-script-dir-label">./scripts/sglang</code>
-              to start the LLM with <code id="launch-cmd-label">python3 -m sglang.launch_server or sglang serve</code>. While the server is
-              running, starting again is blocked. Script output while the model loads is on the
-              <strong>Logs</strong> tab (launch script log).
+              Choose a <strong>stack preset</strong> and a <strong>script</strong>, then use
+              <strong>Start</strong> — creates/refreshes the stack with PID&nbsp;1 <code>sleep infinity</code>, then runs SGLang from your
+              <code>.sh</code> via <code>docker exec</code> so the container stays up if the server exits. Output goes to
+              <code id="launch-log-path-label">/workspace/.monitor/sglang-launch.log</code> (see <strong>Logs</strong>).
+              <strong>Check status</strong> re-probes the stack for your preset and SGLang in the target container (change preset for another stack, or use Advanced to pick a container). <strong>Stop SGLang</strong> stops inference only (container keeps running). <strong>Stop container</strong> runs <code>docker stop</code> on the stack preset container (with <code>--rm</code> it is removed).
             </p>
             <details class="launch-more">
               <summary>How it works</summary>
               <p>
-                Host repo <code id="launch-host-dir-label">./scripts/sglang</code> is mounted at
+                Host repo <code id="launch-host-dir-label">./scripts/sglang</code> mounts at
                 <code id="launch-container-dir-label">/workspace/scripts/sglang</code>. The API
-                runs <code>docker exec -d …</code> with the script’s stdout/stderr appended to
-                <code id="launch-log-path-label">/workspace/.monitor/sglang-launch.log</code> (that output does not appear in
-                <code>docker logs</code>, which is only the container’s main process). Open the
-                <strong>Logs</strong> tab to tail that file; <strong>Check launch server</strong> and
+                With a <strong>stack preset</strong>, <strong>Start</strong> runs <code>docker run … sleep infinity</code>
+                (PID&nbsp;1 keeps the stack alive), writes the exact run to <code>.monitor/monitor-stack-&lt;preset&gt;.docker-run.sh</code>,
+                then <code>docker exec -d bash /workspace/.monitor/monitor-launch-&lt;script&gt;.rendered.sh</code>
+                (replay helper: <code>.monitor/monitor-launch-&lt;script&gt;.docker-exec.sh</code>; model flags in
+                <code>.rendered.body.sh</code>). Advanced: pick a container only — same <code>exec</code> path into an existing idle stack.
+                Optional <code>HF_TOKEN</code> is passed into the container; mount root is <code>MONITOR_REPO_ROOT</code>
+                (or auto-detected). Open <strong>Logs</strong> to tail the launch log;
                 <strong id="launch-metrics-label">SGLang metrics</strong> show readiness.
               </p>
             </details>
 
             <div class="launch-fields">
               <label class="field field-grow">
-                <span>Container</span>
-                <select id="sel-launch-container" aria-label="Container for launch script"></select>
+                <span>Stack preset</span>
+                <select id="sel-launch-stack-preset" aria-label="Stack container preset"></select>
               </label>
               <label class="field field-grow">
                 <span>Script</span>
-                <select id="sel-launch-script" aria-label="Launch script"></select>
+                <select id="sel-launch-script" aria-label="Launch script (.sh)"></select>
               </label>
             </div>
             <div class="launch-args-editor">
               <p class="hint">
-                Launch args from script (<code id="launch-args-cmd-label">python3 -m sglang.launch_server or sglang serve</code>): edit values or uncheck to remove
+                Launch args parsed from script (<code id="launch-args-cmd-label">python3 -m sglang.launch_server or sglang serve</code>): edit values or uncheck to remove
                 unsupported flags.
               </p>
               <div id="launch-args-empty" class="hint">Select a script to load args.</div>
@@ -157,9 +96,9 @@
             <details class="launch-more launch-cluster" id="launch-cluster-section">
               <summary>Multi-node cluster</summary>
               <p class="launch-cluster-lead">
-                Optional <code>export</code> lines before your launch script: <strong>NCCL / GLOO / MASTER_*</strong>
+                Optional <code>export</code> lines merged before the server command: <strong>NCCL / GLOO / MASTER_*</strong>
                 (same for SGLang and vLLM—PyTorch / NCCL pick them up). Use different interfaces on each host;
-                run <strong>Run script</strong> per node. Repo <code>.env</code> can prefill via the API when you use
+                run <strong>Start</strong> per node. Repo <code>.env</code> can prefill via the API when you use
                 <code>npm run dev</code>. <strong>SGLang</strong>: merges <code>--dist-init-addr</code> /
                 <code>--nnodes</code> / <code>--node-rank</code> into <code>launch_server</code> when missing from the script.
                 <strong>vLLM</strong>: merges <code>--master-addr</code> / <code>--master-port</code> (from the
@@ -209,21 +148,44 @@
               </div>
             </details>
 
-            <div class="launch-toolbar">
-              <div class="launch-toolbar__main">
-                <button type="button" id="btn-launch-refresh-containers" class="btn">
-                  Refresh containers
-                </button>
-                <button type="button" id="btn-launch-check-server" class="btn">Check launch server</button>
-                <button type="button" id="btn-launch-stop-server" class="btn"
-                  title="Send SIGTERM, then SIGKILL if needed, to matching launch processes.">
-                  Stop launch server
-                </button>
-              </div>
-              <div class="launch-toolbar__run">
-                <button type="button" id="btn-launch-run" class="btn primary">Run script</button>
-              </div>
+            <div class="launch-toolbar launch-toolbar--primary">
+              <button type="button" id="btn-launch-run" class="btn primary">Start</button>
+              <button type="button" id="btn-launch-refresh-status" class="btn"
+                title="Re-check Docker stack (preset) and whether SGLang is running in the target container.">
+                Check status
+              </button>
+              <button type="button" id="btn-launch-stop-server" class="btn"
+                title="Stop SGLang (launch_server) in the target container — SIGTERM, then SIGKILL if needed. Docker stack keeps running.">
+                Stop SGLang
+              </button>
+              <button type="button" id="btn-launch-stop-stack-primary" class="btn"
+                title="docker stop for the stack container (preset or Advanced target). Stops SGLang too; with --rm the container is removed.">
+                Stop container
+              </button>
             </div>
+
+            <details class="launch-more launch-advanced" id="launch-advanced-section">
+              <summary>Advanced — Docker stack &amp; container</summary>
+              <p class="hint">
+                Use this if you need to stop the whole stack container, pick a different container for status checks, or
+                refresh lists manually.
+              </p>
+              <p id="status-launch-stack" class="status" aria-live="polite"></p>
+              <div class="launch-toolbar launch-stack-toolbar">
+                <button type="button" id="btn-launch-stack-refresh" class="btn">Refresh stack status</button>
+                <button type="button" id="btn-launch-stack-stop" class="btn">Stop stack container</button>
+              </div>
+              <div class="launch-fields">
+                <label class="field field-grow">
+                  <span>Container (status / stop target when changed)</span>
+                  <select id="sel-launch-container" aria-label="Container for status, Stop SGLang, Stop container, and Stop stack container"></select>
+                </label>
+              </div>
+              <div class="launch-toolbar">
+                <button type="button" id="btn-launch-refresh-containers" class="btn">Refresh containers</button>
+                <button type="button" id="btn-launch-check-server" class="btn">Check server</button>
+              </div>
+            </details>
 
             <div class="launch-status-box">
               <p id="status-launch-server" class="status" aria-live="polite"></p>
@@ -240,8 +202,8 @@
           <section class="panel panel-nested launch-model-section">
             <h2>Chat &amp; Benchmark model id</h2>
             <p class="launch-lead">
-              Must match <code>--served-model-name</code> from your script. Saved in this browser;
-              <strong>Check launch server</strong> syncs it to the running server’s model id when they differ.
+              Must match <code>--served-model-name</code> from your launch script. Saved in this browser;
+              <strong>Check server</strong> syncs it to the running server’s model id when they differ.
             </p>
             <label class="field field-grow">
               <span>Model id</span>
@@ -258,10 +220,11 @@
             <h2>Container logs</h2>
             <p class="logs-lead">
               Prefer <strong>Launch script log</strong>
-              (<code>/workspace/.monitor/sglang-launch.log</code>): that is where <strong>Launch</strong>
-              tab scripts run (via <code>docker exec</code>), including load progress. Monitor stack
-              containers use <code>sleep infinity</code> as PID&nbsp;1, so <strong>Docker logs</strong>
-              (same as host <code>docker logs</code>) is usually almost empty—not your LLM session.
+              (<code>/workspace/.monitor/sglang-launch.log</code>): that is where the <strong>Starter</strong>
+              tab runs your <code>.sh</code>; output is appended there (whether PID&nbsp;1 is a wrapper script or
+              <code>docker exec</code> into a <code>sleep infinity</code> stack). <strong>Docker logs</strong>
+              (host <code>docker logs</code>) may be sparse if the process logs to that file instead of the container
+              console.
             </p>
             <div class="logs-toolbar row">
               <button type="button" id="btn-logs-refresh-containers" class="btn">Refresh containers</button>
@@ -415,7 +378,7 @@
             <div class="row">
               <label class="field field-grow">
                 <span>Model</span>
-                <input type="text" id="bench-model" autocomplete="off" placeholder="Same id as your SGLang launch"
+                <input type="text" id="bench-model" autocomplete="off" placeholder="Same id as your SGLang script"
                   aria-label="Benchmark model id" />
               </label>
             </div>
@@ -452,7 +415,7 @@
         <h2 class="chat-aside__title">Chat</h2>
         <p class="hint chat-aside__hint">
           Uses <code>POST /api/chat/completions</code> → SGLang
-          <code>/v1/chat/completions</code>. Model matches the <strong>Launch</strong> tab (editable here too).
+          <code>/v1/chat/completions</code>. Model matches the <strong>Starter</strong> tab script (editable here too).
         </p>
         <label class="field field-chat-model">
           <span>Model</span>

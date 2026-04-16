@@ -270,6 +270,243 @@ export function formatLaunchEnvPrefix(env: Record<string, string>): string {
   return parts.join(" && ");
 }
 
+function formatLaunchEnvExportLines(env: Record<string, string>): string {
+  const lines: string[] = [];
+  for (const [k, v] of Object.entries(env)) {
+    if (!v.trim()) continue;
+    lines.push(`export ${k}=${shSingleQuoteForExport(v.trim())}`);
+  }
+  return lines.join("\n");
+}
+
+/** Apply Starter-tab arg overrides to a launch `.sh` file (same rules as `runLaunchScriptInContainer`). */
+export function renderLaunchScriptTextWithArgOverrides(
+  scriptText: string,
+  argOverrides: LaunchArgPair[] | undefined,
+  provider: LaunchProvider,
+): string {
+  let renderedScript = scriptText;
+  if (!argOverrides || argOverrides.length === 0) return renderedScript;
+  const lines = renderedScript.split(/\r?\n/);
+  const byKey = new Map(argOverrides.map((a) => [a.key, a]));
+  const updated = lines.flatMap((rawLine) => {
+    const m = rawLine.match(/^(\s*)(--[A-Za-z0-9][A-Za-z0-9-]*)(?:\s+.*)?$/);
+    if (!m) return [rawLine];
+    const key = m[2] ?? "";
+    const ov = byKey.get(key);
+    if (!ov) return [rawLine];
+    if (!ov.enabled && provider === "sglang" && key === "--enable-metrics") {
+      return [rawLine];
+    }
+    if (!ov.enabled) return [];
+    const indent = m[1] ?? "";
+    const hasSlash = rawLine.trimEnd().endsWith("\\");
+    return [`${indent}${ov.key} ${quoteLaunchArgValue(ov.value)}${hasSlash ? " \\" : ""}`];
+  });
+  const missing = missingEnabledArgOverrides(lines, argOverrides, byKey, provider);
+  const finalLines = injectMissingArgsIntoRenderedLines(updated, missing, provider);
+  return `${finalLines.join("\n")}\n`;
+}
+
+export type WriteMonitorLaunchBundleResult =
+  | { ok: true; containerWrapperPath: string }
+  | { ok: false; error: string };
+
+/** Drop existing rendered files so we can recreate them as the dashboard user (avoids EACCES on root-owned bind-mount artifacts). */
+function unlinkForRewrite(absPath: string, monitorDir: string): WriteMonitorLaunchBundleResult | null {
+  try {
+    fs.unlinkSync(absPath);
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === "ENOENT") return null;
+    if (err.code === "EACCES" || err.code === "EPERM") {
+      return {
+        ok: false,
+        error: `Permission denied on ${absPath} (${err.code}). Files under .monitor/ are often owned by root after Docker wrote them through the bind mount. Fix once from the repo root: sudo chown -R "$(id -un)" "${monitorDir}"`,
+      };
+    }
+    return { ok: false, error: `Could not replace ${absPath}: ${err.message}` };
+  }
+  return null;
+}
+
+function writeFileSyncMonitor(
+  absPath: string,
+  content: string,
+  mode: number,
+  monitorDir: string,
+): WriteMonitorLaunchBundleResult | null {
+  try {
+    fs.writeFileSync(absPath, content, { mode });
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === "EACCES" || err.code === "EPERM") {
+      return {
+        ok: false,
+        error: `Permission denied writing ${absPath} (${err.code}). From the repo root: sudo chown -R "$(id -un)" "${monitorDir}"`,
+      };
+    }
+    return { ok: false, error: `Could not write ${absPath}: ${err.message}` };
+  }
+  return null;
+}
+
+/**
+ * Writes `.monitor/monitor-launch-<script>.rendered.body.sh` plus `.rendered.sh` wrapper on the host repo
+ * (bind-mounted at `/workspace/.monitor/…`). Used for `docker exec -d … bash /workspace/…/monitor-launch-*.rendered.sh`
+ * when PID&nbsp;1 is `sleep infinity` (Starter) or an existing idle stack (Advanced).
+ */
+export function writeMonitorLaunchBundle(
+  provider: LaunchProvider,
+  scriptBasename: string,
+  argOverrides: LaunchArgPair[] | undefined,
+  launchEnv: Record<string, string> | undefined,
+): WriteMonitorLaunchBundleResult {
+  if (!isAllowedLaunchScript(provider, scriptBasename)) {
+    return { ok: false, error: "Unknown or disallowed script" };
+  }
+  if (
+    argOverrides !== undefined &&
+    !argOverrides.every(
+      (a) =>
+        typeof a.key === "string" &&
+        a.key.startsWith("--") &&
+        a.key.length > 2 &&
+        /^[A-Za-z0-9-]+$/.test(a.key.slice(2)) &&
+        typeof a.value === "string" &&
+        typeof a.enabled === "boolean",
+    )
+  ) {
+    return { ok: false, error: "Invalid argOverrides format" };
+  }
+
+  let filteredEnv: Record<string, string> = {};
+  if (launchEnv !== undefined && Object.keys(launchEnv).length > 0) {
+    for (const [k, v] of Object.entries(launchEnv)) {
+      if (typeof k === "string" && typeof v === "string" && v.trim().length > 0) {
+        filteredEnv[k.trim()] = v.trim();
+      }
+    }
+    if (Object.keys(filteredEnv).length > 0) {
+      const err = validateLaunchEnv(filteredEnv);
+      if (err) {
+        return { ok: false, error: err };
+      }
+    } else {
+      filteredEnv = {};
+    }
+  }
+
+  const dirs = resolveLaunchScriptDirs(provider);
+  if (!dirs) {
+    return {
+      ok: false,
+      error: `No launch scripts directory found for ${providerName(provider)}. Expected \`scripts/${provider}\` under MONITOR_REPO_ROOT/current repo.`,
+    };
+  }
+  const hostScriptPath = path.join(dirs.hostDir, scriptBasename);
+  let raw = "";
+  try {
+    raw = fs.readFileSync(hostScriptPath, "utf8");
+  } catch {
+    return { ok: false, error: "Could not read launch script" };
+  }
+  const body = renderLaunchScriptTextWithArgOverrides(raw, argOverrides, provider);
+  const repoRoot = findRepoRoot();
+  const mon = path.join(repoRoot, ".monitor");
+  fs.mkdirSync(mon, { recursive: true });
+  const fileBase = `monitor-launch-${scriptBasename}`;
+  const bodyName = `${fileBase}.rendered.body.sh`;
+  const wrapName = `${fileBase}.rendered.sh`;
+  const hostBodyPath = path.join(mon, bodyName);
+  const hostWrapPath = path.join(mon, wrapName);
+  for (const p of [hostBodyPath, hostWrapPath]) {
+    const u = unlinkForRewrite(p, mon);
+    if (u) return u;
+  }
+  const w1 = writeFileSyncMonitor(hostBodyPath, body, 0o755, mon);
+  if (w1) return w1;
+  const logPath = LAUNCH_LOG_PATH[provider];
+  const bodyContainerPath = `/workspace/.monitor/${bodyName}`;
+  const exportBlock = formatLaunchEnvExportLines(filteredEnv);
+  const exportSection = exportBlock ? `${exportBlock}\n` : "";
+  const wrapper = `#!/usr/bin/env bash
+set -euo pipefail
+${exportSection}mkdir -p /workspace/.monitor
+LOG=${logPath}
+printf '%s\\n' "---- $(date +%Y-%m-%dT%H:%M:%S%z) starting ${scriptBasename} ----" >>"$LOG"
+cd /workspace
+if command -v script >/dev/null 2>&1; then
+  script -qefc 'bash ${bodyContainerPath}' - >>"$LOG" 2>&1
+else
+  bash '${bodyContainerPath}' >>"$LOG" 2>&1
+fi
+`;
+  const w2 = writeFileSyncMonitor(hostWrapPath, wrapper, 0o755, mon);
+  if (w2) return w2;
+  return { ok: true, containerWrapperPath: `/workspace/.monitor/${wrapName}` };
+}
+
+function shSingleQuoteForDockerExec(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Writes `.monitor/monitor-launch-<script>.docker-exec.sh` documenting the host `docker exec -d` used after
+ * `monitor-stack-*.docker-run.sh` (same argv the dashboard runs).
+ */
+export function writeMonitorDockerExecHelper(
+  provider: LaunchProvider,
+  opts: {
+    scriptBasename: string;
+    containerName: string;
+    wrapperContainerPath: string;
+  },
+): WriteMonitorLaunchBundleResult {
+  if (!isAllowedLaunchScript(provider, opts.scriptBasename)) {
+    return { ok: false, error: "Unknown or disallowed script" };
+  }
+  try {
+    assertSafeContainerName(opts.containerName);
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Invalid container name" };
+  }
+  const wrap = opts.wrapperContainerPath.trim();
+  if (!wrap.startsWith("/workspace/.monitor/") || !wrap.endsWith(".rendered.sh")) {
+    return { ok: false, error: "Invalid wrapper path" };
+  }
+
+  const repoRoot = findRepoRoot();
+  const mon = path.join(repoRoot, ".monitor");
+  fs.mkdirSync(mon, { recursive: true });
+  const name = `monitor-launch-${opts.scriptBasename}.docker-exec.sh`;
+  const hostPath = path.join(mon, name);
+  const u = unlinkForRewrite(hostPath, mon);
+  if (u) return u;
+
+  const logPath = LAUNCH_LOG_PATH[provider];
+  const env = monitorLaunchExecEnv();
+  const envLines: string[] = [];
+  if (env) {
+    for (const [k, v] of Object.entries(env)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k) || /[\n\r\0]/.test(v)) continue;
+      envLines.push(`  -e ${shSingleQuoteForDockerExec(`${k}=${v}`)} \\`);
+    }
+  }
+  const envBlock = envLines.length > 0 ? `${envLines.join("\n")}\n` : "";
+  const script = `#!/usr/bin/env bash
+set -euo pipefail
+# After the stack exists (PID 1: sleep infinity), run the launch wrapper inside the container.
+# Flags / script: monitor-launch-${opts.scriptBasename}.rendered.body.sh — runtime log: ${logPath}
+docker exec -d \\
+${envBlock}  ${shSingleQuoteForDockerExec(opts.containerName)} \\
+  bash ${shSingleQuoteForDockerExec(wrap)}
+`;
+  const w = writeFileSyncMonitor(hostPath, script, 0o755, mon);
+  if (w) return w;
+  return { ok: true, containerWrapperPath: wrap };
+}
+
 type ScriptMeta = {
   launchArgs: LaunchArgPair[];
 };
@@ -571,85 +808,13 @@ export async function runLaunchScriptInContainer(
         "Recreate the stack container so host repo root is mounted at /workspace.",
     };
   }
-  const logPath = LAUNCH_LOG_PATH[provider];
-  if (
-    argOverrides !== undefined &&
-    !argOverrides.every(
-      (a) =>
-        typeof a.key === "string" &&
-        a.key.startsWith("--") &&
-        a.key.length > 2 &&
-        /^[A-Za-z0-9-]+$/.test(a.key.slice(2)) &&
-        typeof a.value === "string" &&
-        typeof a.enabled === "boolean",
-    )
-  ) {
-    return { ok: false, error: "Invalid argOverrides format" };
+  const bundle = writeMonitorLaunchBundle(provider, scriptBasename, argOverrides, launchEnv);
+  if (!bundle.ok) {
+    return { ok: false, error: bundle.error };
   }
-  const argOverridesEffective = argOverrides;
-  let envPrefix = "";
-  if (launchEnv !== undefined && Object.keys(launchEnv).length > 0) {
-    const filtered: Record<string, string> = {};
-    for (const [k, v] of Object.entries(launchEnv)) {
-      if (typeof k === "string" && typeof v === "string" && v.trim().length > 0) {
-        filtered[k.trim()] = v.trim();
-      }
-    }
-    if (Object.keys(filtered).length > 0) {
-      const err = validateLaunchEnv(filtered);
-      if (err) {
-        return { ok: false, error: err };
-      }
-      envPrefix = `${formatLaunchEnvPrefix(filtered)} && `;
-    }
-  }
-  const hostScriptPath = path.join(dirs.hostDir, scriptBasename);
-  let renderedScript = "";
-  try {
-    renderedScript = fs.readFileSync(hostScriptPath, "utf8");
-  } catch {
-    return { ok: false, error: "Could not read launch script" };
-  }
-  if (argOverridesEffective && argOverridesEffective.length > 0) {
-    const lines = renderedScript.split(/\r?\n/);
-    const byKey = new Map(argOverridesEffective.map((a) => [a.key, a]));
-    const updated = lines.flatMap((rawLine) => {
-      const m = rawLine.match(/^(\s*)(--[A-Za-z0-9][A-Za-z0-9-]*)(?:\s+.*)?$/);
-      if (!m) return [rawLine];
-      const key = m[2] ?? "";
-      const ov = byKey.get(key);
-      if (!ov) return [rawLine];
-      // Dashboard metrics need Prometheus on the inference port; do not strip this flag.
-      if (!ov.enabled && provider === "sglang" && key === "--enable-metrics") {
-        return [rawLine];
-      }
-      if (!ov.enabled) return [];
-      const indent = m[1] ?? "";
-      const hasSlash = rawLine.trimEnd().endsWith("\\");
-      return [`${indent}${ov.key} ${quoteLaunchArgValue(ov.value)}${hasSlash ? " \\" : ""}`];
-    });
-    const missing = missingEnabledArgOverrides(lines, argOverridesEffective, byKey, provider);
-    const finalLines = injectMissingArgsIntoRenderedLines(updated, missing, provider);
-    renderedScript = `${finalLines.join("\n")}\n`;
-  }
-  const renderedScriptB64 = Buffer.from(renderedScript, "utf8").toString("base64");
-  /**
-   * Detached `docker exec` has no TTY; many loaders disable or break progress bars without one.
-   * `script -qefc` (util-linux) allocates a pseudo-terminal when available; fall back to plain bash.
-   */
-  const launchCommand =
-    `tmp="/workspace/.monitor/monitor-launch-${scriptBasename}.rendered.sh"; ` +
-    `printf '%s' '${renderedScriptB64}' | base64 -d > "$tmp" && chmod +x "$tmp" && bash "$tmp"; exit $?`;
-  const runScript =
-    `(command -v script >/dev/null 2>&1 && script -qefc '${launchCommand}' - || sh -c '${launchCommand}') >> ${logPath} 2>&1`;
-  const shellCmd = [
-    `${envPrefix}mkdir -p /workspace/.monitor`,
-    `printf '%s\\n' "---- $(date +%Y-%m-%dT%H:%M:%S%z) starting ${scriptBasename} ----" >> ${logPath}`,
-    runScript,
-  ].join(" && ");
   const { code, stderr } = await dockerExecDetached(
     container,
-    ["sh", "-c", shellCmd],
+    ["bash", bundle.containerWrapperPath],
     monitorLaunchExecEnv(),
   );
   if (code !== 0) {

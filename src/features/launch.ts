@@ -1,7 +1,7 @@
 /**
- * Launch tab: run provider scripts (`scripts/sglang/*.sh` or `scripts/vllm/*.sh`)
- * inside the stack container via `docker exec` (detached).
- * Launch server detection: `GET /api/launch/status` (pgrep, then served model from ps /v1/models).
+ * Starter tab: stack preset + `scripts/<provider>/*.sh`. **Start** calls `POST /api/launch` with `preset` + `script`
+ * so the server runs the stack and the shell script in one request.
+ * Server status: `GET /api/launch/status` (pgrep, then served model from ps /v1/models).
  */
 
 import {
@@ -46,7 +46,9 @@ const selScript = document.querySelector<HTMLSelectElement>("#sel-launch-script"
 const launchArgsList = document.querySelector<HTMLDivElement>("#launch-args-list");
 const launchArgsEmpty = document.querySelector<HTMLDivElement>("#launch-args-empty");
 const btnRun = document.querySelector<HTMLButtonElement>("#btn-launch-run");
+const btnRefreshStatus = document.querySelector<HTMLButtonElement>("#btn-launch-refresh-status");
 const btnStopServer = document.querySelector<HTMLButtonElement>("#btn-launch-stop-server");
+const btnStopStackPrimary = document.querySelector<HTMLButtonElement>("#btn-launch-stop-stack-primary");
 const statusServerEl = document.querySelector<HTMLParagraphElement>("#status-launch-server");
 const statusDetailEl = document.querySelector<HTMLParagraphElement>("#status-launch-detail");
 const statusScriptEl = document.querySelector<HTMLParagraphElement>("#status-launch-script");
@@ -76,6 +78,21 @@ let lastServerRunning: boolean | null = null;
 let lastServedModel: string | null = null;
 const scriptsById = new Map<string, LaunchScriptInfo>();
 
+type StackPreset = {
+  id: string;
+  label: string;
+  containerName: string;
+  image: string;
+};
+
+const selStackPreset = document.querySelector<HTMLSelectElement>("#sel-launch-stack-preset");
+const btnLaunchStackRefresh = document.querySelector<HTMLButtonElement>("#btn-launch-stack-refresh");
+const btnLaunchStackStop = document.querySelector<HTMLButtonElement>("#btn-launch-stack-stop");
+const statusLaunchStackEl = document.querySelector<HTMLParagraphElement>("#status-launch-stack");
+const launchStackScriptsLabel = document.querySelector<HTMLElement>("#launch-stack-scripts-label");
+
+let stackPresets: StackPreset[] = [];
+
 function updateLaunchCopy(provider: MonitorProvider): void {
   const isVllm = provider === "vllm";
   if (launchClusterSection) {
@@ -89,8 +106,8 @@ function updateLaunchCopy(provider: MonitorProvider): void {
   }
   if (launchTitle) {
     launchTitle.innerHTML = isVllm
-      ? "Launch vLLM (<code>serve</code>)"
-      : "Launch SGLang (<code>launch_server</code> / <code>sglang serve</code>)";
+      ? "Starter — vLLM (<code>serve</code>)"
+      : "Starter — SGLang (<code>launch_server</code> / <code>sglang serve</code>)";
   }
   const hostDir = isVllm ? "./scripts/vllm" : "./scripts/sglang";
   const containerDir = isVllm ? "/workspace/scripts/vllm" : "/workspace/scripts/sglang";
@@ -103,11 +120,189 @@ function updateLaunchCopy(provider: MonitorProvider): void {
   if (launchLogPathLabel) launchLogPathLabel.textContent = logPath;
   if (launchMetricsLabel) launchMetricsLabel.textContent = isVllm ? "vLLM metrics" : "SGLang metrics";
   if (launchArgsCmdLabel) launchArgsCmdLabel.textContent = cmd;
+  if (launchStackScriptsLabel) {
+    launchStackScriptsLabel.textContent =
+      provider === "vllm" ? "containers/vllm/run-docker*.sh" : "containers/sglang/run-docker*.sh";
+  }
 }
 
 function stripSlashName(names: string): string {
   const n = names.trim().split(/\s+/)[0] ?? "";
   return n.startsWith("/") ? n.slice(1) : n;
+}
+
+function imageMatches(actual: string, expected: string): boolean {
+  const a = actual.trim();
+  const e = expected.trim();
+  return a === e || a.startsWith(`${e}@`);
+}
+
+function selectedStackPreset(): StackPreset | undefined {
+  const id = selStackPreset?.value.trim();
+  if (!id) return undefined;
+  return stackPresets.find((p) => p.id === id);
+}
+
+/** Container for status / Stop (inference): explicit Advanced picker, else preset’s Docker name. */
+function statusTargetContainer(): string {
+  const fromSelect = selContainer?.value.trim() ?? "";
+  if (fromSelect) return fromSelect;
+  return selectedStackPreset()?.containerName ?? "";
+}
+
+function isStackPresetContainerName(name: string): boolean {
+  return stackPresets.some((p) => p.containerName === name);
+}
+
+function setStackHostStatus(message: string, isError = false): void {
+  if (!statusLaunchStackEl) return;
+  statusLaunchStackEl.textContent = message;
+  statusLaunchStackEl.classList.toggle("error", isError);
+}
+
+function setStackToolbarBusy(busy: boolean): void {
+  if (btnLaunchStackRefresh) btnLaunchStackRefresh.disabled = busy;
+  if (btnLaunchStackStop) btnLaunchStackStop.disabled = busy;
+  if (btnStopStackPrimary) btnStopStackPrimary.disabled = busy;
+}
+
+async function selectDefaultStackPresetFromRunningContainer(): Promise<void> {
+  if (!selStackPreset || stackPresets.length === 0) return;
+  try {
+    const res = await fetch("/api/containers");
+    const body = (await res.json()) as { containers?: ContainerRow[] };
+    if (!res.ok) return;
+    const rows = body.containers ?? [];
+    if (rows.length === 0) return;
+
+    for (const p of stackPresets) {
+      const row = rows.find((r) => stripSlashName(r.Names) === p.containerName);
+      if (row) {
+        selStackPreset.value = p.id;
+        return;
+      }
+    }
+
+    for (const p of stackPresets) {
+      const row = rows.find((r) => imageMatches(r.Image, p.image));
+      if (row) {
+        selStackPreset.value = p.id;
+        return;
+      }
+    }
+  } catch {
+    /* keep selection */
+  }
+}
+
+async function loadStackPresets(): Promise<void> {
+  if (!selStackPreset) return;
+  try {
+    const res = await fetch(withProviderQuery("/api/stack/presets"));
+    const body = (await res.json()) as { presets?: StackPreset[]; error?: string };
+    if (!res.ok) {
+      selStackPreset.innerHTML = "";
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = body.error ?? "Failed to load presets";
+      selStackPreset.appendChild(opt);
+      setStackHostStatus(body.error ?? "Could not load stack presets.", true);
+      return;
+    }
+    stackPresets = body.presets ?? [];
+    selStackPreset.innerHTML = "";
+    if (stackPresets.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "(no presets)";
+      selStackPreset.appendChild(opt);
+      setStackHostStatus("No stack presets configured on the server.");
+      return;
+    }
+    for (const p of stackPresets) {
+      const opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = `${p.label} (${p.containerName})`;
+      selStackPreset.appendChild(opt);
+    }
+    await selectDefaultStackPresetFromRunningContainer();
+    setStackHostStatus("Pick a preset; Start will run the stack if needed.");
+  } catch (e) {
+    selStackPreset.innerHTML = "";
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "(error)";
+    selStackPreset.appendChild(opt);
+    setStackHostStatus(e instanceof Error ? e.message : String(e), true);
+  }
+}
+
+async function refreshStackHostStatus(): Promise<void> {
+  const p = selectedStackPreset();
+  if (!p) {
+    setStackHostStatus("Select a stack preset.", true);
+    return;
+  }
+  try {
+    const res = await fetch("/api/containers");
+    const body = (await res.json()) as { containers?: ContainerRow[]; error?: string };
+    if (!res.ok) {
+      setStackHostStatus(body.error ?? `Could not list containers (${res.status}).`, true);
+      return;
+    }
+    const rows = body.containers ?? [];
+    const row = rows.find((r) => stripSlashName(r.Names) === p.containerName);
+    if (row) {
+      setStackHostStatus(
+        `Stack container running — ${p.containerName} (${row.Image}), state: ${row.State}.`,
+      );
+    } else {
+      setStackHostStatus(
+        `Stack container not running — ${p.containerName} is not in docker ps. Start will run it.`,
+      );
+    }
+  } catch (e) {
+    setStackHostStatus(e instanceof Error ? e.message : String(e), true);
+  }
+}
+
+async function stopStackHost(): Promise<void> {
+  const container = statusTargetContainer();
+  if (!container) {
+    setStackHostStatus("Pick a stack preset (or a container under Advanced).", true);
+    return;
+  }
+  if (!isStackPresetContainerName(container)) {
+    setStackHostStatus(
+      `Cannot stop “${container}” here — not a stack preset container. Use Docker directly, or pick a preset container.`,
+      true,
+    );
+    return;
+  }
+  setStackToolbarBusy(true);
+  setStackHostStatus(`Stopping ${container}…`);
+  try {
+    const res = await fetch("/api/stack/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ container }),
+    });
+    const body = (await res.json()) as { ok?: boolean; message?: string; error?: string; stderr?: string };
+    if (!res.ok) {
+      const parts = [body.error ?? `HTTP ${res.status}`];
+      if (body.stderr) parts.push(body.stderr);
+      setStackHostStatus(parts.join(" — "), true);
+      return;
+    }
+    setStackHostStatus(body.message ?? "Stopped.");
+    await refreshStackHostStatus();
+    await loadContainers();
+  } catch (e) {
+    setStackHostStatus(e instanceof Error ? e.message : String(e), true);
+  } finally {
+    setStackToolbarBusy(false);
+    updateRunButtonState();
+  }
 }
 
 function setScriptStatus(message: string, isError = false): void {
@@ -309,7 +504,7 @@ async function applyClusterDefaultsFromEnvFile(): Promise<void> {
   }
 }
 
-/** Apply Container tab / localStorage preference over cluster checkbox. */
+/** Apply stored single/cluster preference over cluster checkbox (when `.env` does not override). */
 function applyStoredStackLaunchModeToClusterUI(): void {
   const provider = getMonitorProvider();
   if (
@@ -342,29 +537,41 @@ function buildClusterLaunchEnv(): Record<string, string> | undefined {
 }
 
 function updateRunButtonState(): void {
-  if (!btnRun || !selContainer || !selScript) return;
-  const c = selContainer.value.trim();
+  if (!btnRun || !selScript) return;
+  const presetId = selStackPreset?.value.trim() ?? "";
   const s = selScript.value.trim();
   const blocked = lastServerRunning === true;
-  btnRun.disabled = !c || !s || blocked;
+  /** Preset implies a target container name; Start will run the stack if `docker ps` is empty. */
+  btnRun.disabled = !presetId || !s || blocked;
   if (blocked) {
-    btnRun.title = "A launch server appears to be running in this container (last check). Stop it or pick another container.";
+    btnRun.title =
+      "SGLang appears to be running (last check). Stop SGLang first, or use Advanced to check another container.";
   } else {
     btnRun.removeAttribute("title");
   }
+  const target = statusTargetContainer();
   if (btnStopServer) {
-    btnStopServer.disabled = !c;
+    btnStopServer.disabled = !target;
+  }
+  if (btnStopStackPrimary) {
+    const can = Boolean(target && isStackPresetContainerName(target));
+    btnStopStackPrimary.disabled = !can;
+    if (target && !can) {
+      btnStopStackPrimary.title = `“${target}” is not a stack preset container — stop it with Docker, or pick a preset container.`;
+    } else {
+      btnStopStackPrimary.title =
+        "docker stop for the stack container (preset or Advanced target). Stops SGLang too; with --rm the container is removed.";
+    }
   }
 }
 
 async function refreshLaunchStatus(): Promise<void> {
-  if (!selContainer) return;
-  const container = selContainer.value.trim();
+  const container = statusTargetContainer();
   if (!container) {
     lastServerRunning = null;
     lastServedModel = null;
     setApplyModelButton(false);
-    setServerStatusLine("idle", "Select a container and script.", null);
+    setServerStatusLine("idle", "Pick a stack preset to see SGLang status.", null);
     updateRunButtonState();
     return;
   }
@@ -412,8 +619,8 @@ async function refreshLaunchStatus(): Promise<void> {
           ? body.servedModel
           : null;
       const main = lastServedModel
-        ? `Running — served model: ${lastServedModel}. Run script disabled.`
-        : `Running — served model not detected yet (retry Check). Run script disabled.`;
+        ? `Running — served model: ${lastServedModel}. Start disabled.`
+        : `Running — served model not detected yet (Advanced → Check server). Start disabled.`;
       setServerStatusLine("ok", main, body.detail?.trim() || null);
       if (lastServedModel && getPreferredModel().trim() !== lastServedModel) {
         setPreferredModel(lastServedModel);
@@ -427,7 +634,7 @@ async function refreshLaunchStatus(): Promise<void> {
     } else {
       lastServedModel = null;
       setApplyModelButton(false);
-      setServerStatusLine("ok", "Not running — you can run a script.", body.detail?.trim() || null);
+      setServerStatusLine("ok", "Not running — you can Start a launch script.", body.detail?.trim() || null);
     }
     updateRunButtonState();
   } catch (e) {
@@ -493,9 +700,9 @@ async function loadScripts(): Promise<void> {
 }
 
 async function loadContainers(): Promise<void> {
-  if (!selContainer || !btnRefresh) return;
+  if (!selContainer) return;
   setScriptStatus("Loading containers…");
-  btnRefresh.disabled = true;
+  if (btnRefresh) btnRefresh.disabled = true;
   try {
     const res = await fetch("/api/containers");
     const body = (await res.json()) as {
@@ -518,10 +725,10 @@ async function loadContainers(): Promise<void> {
       setApplyModelButton(false);
       setServerStatusLine(
         "error",
-        "No running containers. Start the stack from the Container tab for the selected provider.",
+        "No running containers. Choose a preset and click Start — the server creates or starts the stack, then runs the script.",
         null,
       );
-      setScriptStatus("No running containers.", true);
+      setScriptStatus("No running containers yet (Start will bring up the stack).", true);
       updateRunButtonState();
       return;
     }
@@ -532,22 +739,25 @@ async function loadContainers(): Promise<void> {
       opt.textContent = `${name} — ${row.Image}`;
       selContainer.appendChild(opt);
     }
-    const preferred = pickPreferredContainer(rows, getMonitorProvider());
+    const sp = selectedStackPreset();
+    const preferred =
+      sp && rows.some((r) => stripSlashName(r.Names) === sp.containerName)
+        ? sp.containerName
+        : pickPreferredContainer(rows, getMonitorProvider());
     if (preferred) selContainer.value = preferred;
     setScriptStatus(`Loaded ${rows.length} container(s).`);
     await refreshLaunchStatus();
   } catch (e) {
     setScriptStatus(e instanceof Error ? e.message : String(e), true);
   } finally {
-    btnRefresh.disabled = false;
+    if (btnRefresh) btnRefresh.disabled = false;
   }
 }
 
 async function stopLaunchServer(): Promise<void> {
-  if (!selContainer) return;
-  const container = selContainer.value.trim();
+  const container = statusTargetContainer();
   if (!container) {
-    setScriptStatus("Pick a container.", true);
+    setScriptStatus("Pick a stack preset (or a container under Advanced).", true);
     return;
   }
   setScriptStatus("Stopping launch_server…");
@@ -585,44 +795,56 @@ async function stopLaunchServer(): Promise<void> {
 }
 
 async function runLaunchScript(): Promise<void> {
-  if (!selContainer || !selScript || !btnRun) return;
-  const container = selContainer.value.trim();
-  const script = selScript.value.trim();
-  if (!container) {
-    setScriptStatus("Pick a container.", true);
+  if (!selScript || !btnRun) return;
+  const preset = selectedStackPreset();
+  if (!preset) {
+    setScriptStatus("Pick a stack preset.", true);
     return;
   }
+  const script = selScript.value.trim();
   if (!script) {
     setScriptStatus("Pick a launch script.", true);
-    return;
-  }
-  if (lastServerRunning === true) {
-    setScriptStatus("Launch server already running—use Check launch server or stop the process first.", true);
     return;
   }
   const argOverrides = mergeClusterQuickOverrides(collectLaunchArgsOverrides(script));
   const launchEnv = buildClusterLaunchEnv();
 
-  setScriptStatus(`Starting ${script} in ${container}…`);
+  setScriptStatus(`Starting stack and ${script}…`);
   btnRun.disabled = true;
   try {
     const res = await fetch(withProviderQuery("/api/launch"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        container,
+        preset: preset.id,
         script,
         argOverrides,
         ...(launchEnv ? { launchEnv } : {}),
       }),
     });
-    const body = (await res.json()) as {
+    const raw = await res.text();
+    let body: {
       ok?: boolean;
       message?: string;
       error?: string;
       stderr?: string;
       conflict?: boolean;
-    };
+    } = {};
+    if (raw.length > 0) {
+      try {
+        body = JSON.parse(raw) as typeof body;
+      } catch {
+        const hint =
+          raw.trimStart().startsWith("<") || raw.includes("<!DOCTYPE")
+            ? " Got HTML instead of JSON — use npm run dev (or vite preview with API on :8787), not a static file server alone."
+            : "";
+        setScriptStatus(
+          `Invalid JSON from server (HTTP ${res.status}).${hint} First bytes: ${raw.slice(0, 160).replace(/\s+/g, " ")}`,
+          true,
+        );
+        return;
+      }
+    }
 
     if (!res.ok) {
       const parts = [body.error ?? `HTTP ${res.status}`];
@@ -632,8 +854,24 @@ async function runLaunchScript(): Promise<void> {
         lastServerRunning = true;
         await refreshLaunchStatus();
       }
+      await refreshStackHostStatus();
       return;
     }
+
+    await refreshStackHostStatus();
+    await loadContainers();
+    if (selContainer && preset.containerName) {
+      const c = preset.containerName;
+      const hasOption = Array.from(selContainer.options).some((o) => o.value === c);
+      if (!hasOption && c) {
+        const opt = document.createElement("option");
+        opt.value = c;
+        opt.textContent = c;
+        selContainer.appendChild(opt);
+      }
+      selContainer.value = c;
+    }
+    await refreshLaunchStatus();
 
     const overrideHint =
       argOverrides.length > 0 || launchEnv
@@ -658,7 +896,7 @@ async function runLaunchScript(): Promise<void> {
   }
 }
 
-export function initLaunch(): void {
+export function initStarter(): void {
   updateLaunchCopy(getMonitorProvider());
   btnApplyModel?.addEventListener("click", () => {
     if (!lastServedModel) return;
@@ -672,6 +910,24 @@ export function initLaunch(): void {
     renderLaunchArgs(selScript.value.trim());
     updateRunButtonState();
   });
+  selStackPreset?.addEventListener("change", () => {
+    void refreshStackHostStatus();
+    void loadContainers();
+  });
+  btnLaunchStackRefresh?.addEventListener("click", () => void refreshStackHostStatus());
+  btnLaunchStackStop?.addEventListener("click", () => void stopStackHost());
+  btnStopStackPrimary?.addEventListener("click", () => void stopStackHost());
+  btnRefreshStatus?.addEventListener("click", () =>
+    void (async () => {
+      if (btnRefreshStatus) btnRefreshStatus.disabled = true;
+      try {
+        await refreshStackHostStatus();
+        await refreshLaunchStatus();
+      } finally {
+        if (btnRefreshStatus) btnRefreshStatus.disabled = false;
+      }
+    })(),
+  );
   btnRefresh?.addEventListener("click", () => void loadContainers());
   btnCheck?.addEventListener("click", () => void refreshLaunchStatus());
   btnStopServer?.addEventListener("click", () => void stopLaunchServer());
@@ -693,6 +949,8 @@ export function initLaunch(): void {
     void (async () => {
       await applyClusterDefaultsFromEnvFile();
       applyStoredStackLaunchModeToClusterUI();
+      await loadStackPresets();
+      await refreshStackHostStatus();
       await loadScripts();
       await loadContainers();
     })();
@@ -703,7 +961,12 @@ export function initLaunch(): void {
   void (async () => {
     await applyClusterDefaultsFromEnvFile();
     applyStoredStackLaunchModeToClusterUI();
+    await loadStackPresets();
+    await refreshStackHostStatus();
     await loadScripts();
     await loadContainers();
   })();
 }
+
+/** @deprecated Use `initStarter` */
+export const initLaunch = initStarter;

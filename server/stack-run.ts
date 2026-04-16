@@ -8,14 +8,16 @@
  * `--network host`, `--privileged`, optional `/dev/infiniband`, `memlock` ulimit; see `launch-cluster-defaults.ts`.
  * The same cluster env/runtime applies to **vLLM** presets when those flags are set (SGLang behavior is unchanged:
  * for `provider === "sglang"`, the booleans match the previous `sglang && …` expressions exactly).
- * **vLLM** presets render source scripts into `.monitor/monitor-stack-<containerName>.rendered.sh`
- * (Launch-tab style), then run that script so `/workspace` matches `findRepoRoot()` instead of the server CWD.
- * SGLang presets still assemble `docker run` in-process.
- * Rendered scripts use `docker run -d` with `sleep infinity` instead of `-it … bash` so the Launch tab can `docker exec`.
+ *
+ * **Starter tab (preset + script):** `launch-scripts.writeMonitorLaunchBundle` writes
+ * `.monitor/monitor-launch-<script>.rendered.{body,sh}.sh`; the API runs `docker run … sleep infinity` (PID&nbsp;1 idle),
+ * records the exact `docker run` in `.monitor/monitor-stack-<preset>.docker-run.sh`, then `docker exec -d` runs the
+ * wrapper (see `.monitor/monitor-launch-<script>.docker-exec.sh`) so SGLang can exit without tearing down the stack.
+ *
+ * **`POST /api/stack/run` (stack only):** `runStackPreset` in **idle** mode keeps `sleep infinity` so other tools can `docker exec`.
  */
 
 import fs from "node:fs";
-import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { assertSafeContainerName, dockerHost } from "./docker.js";
@@ -28,31 +30,8 @@ import { findRepoRoot } from "./repo-root.js";
 import {
   getStackPreset,
   STACK_PRESET_CONTAINER_NAMES,
+  type StackPreset,
 } from "./stack-presets.js";
-
-function runHostBashScript(scriptPath: string): Promise<{
-  code: number | null;
-  stdout: string;
-  stderr: string;
-}> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("bash", [scriptPath], { windowsHide: true });
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.setEncoding("utf8");
-    child.stderr?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr?.on("data", (chunk: string) => {
-      stderr += chunk;
-    });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      resolve({ code, stdout, stderr });
-    });
-  });
-}
 
 /** Published host port for SGLang stack presets (maps to container :30000; matches `scripts/sglang/*.sh`). */
 function sglangStackHostPort(): string {
@@ -65,6 +44,131 @@ function shmSize(): string {
   const s = process.env.MONITOR_STACK_SHM_SIZE?.trim();
   return s || "32g";
 }
+
+function shSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+export type WriteMonitorStackDockerRunScriptResult =
+  | { ok: true; hostPath: string }
+  | { ok: false; error: string };
+
+/**
+ * Writes `.monitor/monitor-stack-<preset.id>.docker-run.sh` with the exact `docker` argv used for this stack
+ * (flags, `-e` pairs, image, PID&nbsp;1 command) for auditing and manual replay.
+ */
+export function writeMonitorStackDockerRunScript(
+  preset: StackPreset,
+  argv: string[],
+): WriteMonitorStackDockerRunScriptResult {
+  const repoRoot = findRepoRoot();
+  const mon = path.join(repoRoot, ".monitor");
+  try {
+    fs.mkdirSync(mon, { recursive: true });
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    return { ok: false, error: `Could not create ${mon}: ${err.message}` };
+  }
+  const safeId = preset.id.replace(/[^a-zA-Z0-9._-]+/g, "_");
+  const hostPath = path.join(mon, `monitor-stack-${safeId}.docker-run.sh`);
+  const lines: string[] = [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    `# Stack: ${preset.label} (${preset.id})`,
+    `# Container: ${preset.containerName} | Image: ${preset.image}`,
+    `# Generated ${new Date().toISOString()} — refresh via Starter or stack run from the dashboard.`,
+    "#",
+    "docker \\",
+  ];
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i]!;
+    const isLast = i === argv.length - 1;
+    lines.push(`  ${shSingleQuote(a)}${isLast ? "" : " \\"}`);
+  }
+  lines.push("");
+  const content = `${lines.join("\n")}\n`;
+  try {
+    try {
+      fs.unlinkSync(hostPath);
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException;
+      if (err.code !== "ENOENT") throw e;
+    }
+    fs.writeFileSync(hostPath, content, { mode: 0o755 });
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === "EACCES" || err.code === "EPERM") {
+      return {
+        ok: false,
+        error: `Permission denied writing ${hostPath} (${err.code}). From the repo root: sudo chown -R "$(id -un)" "${mon}"`,
+      };
+    }
+    return { ok: false, error: `Could not write ${hostPath}: ${err.message}` };
+  }
+  return { ok: true, hostPath };
+}
+
+/**
+ * `docker` argv (no leading `docker`) for SGLang stack presets — same as `runStackPreset` uses for `docker run`.
+ * `mainCommand` is appended after the image (default: `sleep infinity` for idle stack-only mode).
+ */
+export function buildSglangDockerRunArgv(
+  preset: StackPreset,
+  mainCommand: string[] = ["sleep", "infinity"],
+): string[] {
+  const repoRoot = findRepoRoot();
+  const hfCache = path.join(os.homedir(), ".cache", "huggingface");
+  const shm = shmSize();
+  const hostPublish = sglangStackHostPort();
+  const containerPublish = "30000";
+
+  const wantClusterDockerEnv = shouldInjectSglangStackClusterDockerEnv();
+  const wantClusterRuntime = shouldUseSglangClusterDockerRuntime();
+  const presetSupportsCluster = preset.provider === "sglang";
+  const clusterStackEnv = wantClusterDockerEnv && presetSupportsCluster;
+  const clusterRuntime = wantClusterRuntime && presetSupportsCluster;
+
+  const args: string[] = ["run", "-d", "--gpus", "all"];
+  if (clusterRuntime) {
+    args.push("--network", "host");
+    args.push("--privileged");
+    if (fs.existsSync("/dev/infiniband")) {
+      args.push("-v", "/dev/infiniband:/dev/infiniband");
+    }
+    args.push("--ulimit", "memlock=-1:-1");
+  }
+  args.push(
+    "--name",
+    preset.containerName,
+    "--shm-size",
+    shm,
+    ...(clusterRuntime ? [] : ["-p", `${hostPublish}:${containerPublish}`]),
+    "-v",
+    `${hfCache}:/root/.cache/huggingface`,
+    "-v",
+    `${repoRoot}:/workspace`,
+    "--ipc=host",
+    "--rm",
+  );
+  const token = process.env.HF_TOKEN?.trim();
+  if (token) {
+    args.push("-e", `HF_TOKEN=${token}`);
+  }
+  if (clusterStackEnv) {
+    for (const [k, v] of Object.entries(getSglangStackDockerEnvForClusterRun())) {
+      args.push("-e", `${k}=${v}`);
+    }
+  }
+  for (const e of preset.extraEnv) {
+    args.push("-e", e);
+  }
+  args.push(preset.image, ...mainCommand);
+  return args;
+}
+
+export type RunStackPresetMode =
+  | { kind: "idle" }
+  | { kind: "replace"; mainCommand: string[] };
 
 async function containerState(
   name: string,
@@ -142,7 +246,10 @@ export async function getStackContainerLogs(
   return { ok: true, text: r.stdout };
 }
 
-export async function runStackPreset(presetId: string): Promise<RunStackResult> {
+export async function runStackPreset(
+  presetId: string,
+  mode: RunStackPresetMode = { kind: "idle" },
+): Promise<RunStackResult> {
   const preset = getStackPreset(presetId);
   if (!preset) {
     return { ok: false, error: "Unknown stack preset." };
@@ -153,7 +260,44 @@ export async function runStackPreset(presetId: string): Promise<RunStackResult> 
     return { ok: false, error: "Invalid container name in preset." };
   }
 
+  if (mode.kind === "replace") {
+    if (mode.mainCommand.length === 0) {
+      return { ok: false, error: "replace mode requires a non-empty mainCommand." };
+    }
+    const args = buildSglangDockerRunArgv(preset, mode.mainCommand);
+    const recorded = writeMonitorStackDockerRunScript(preset, args);
+    if (!recorded.ok) {
+      return { ok: false, error: recorded.error };
+    }
+    await dockerHost(["rm", "-f", preset.containerName]);
+    const run = await dockerHost(args);
+    if (run.code !== 0) {
+      const err = (run.stderr.trim() || run.stdout.trim()).slice(0, 1200);
+      return {
+        ok: false,
+        error: err || `docker run failed (exit ${run.code ?? "?"})`,
+        stderr: run.stderr.trim() || undefined,
+      };
+    }
+    const clusterStackEnv = shouldInjectSglangStackClusterDockerEnv() && preset.provider === "sglang";
+    const clusterRuntime = shouldUseSglangClusterDockerRuntime() && preset.provider === "sglang";
+    const hostPublish = sglangStackHostPort();
+    const containerPublish = "30000";
+    const scriptHint = path.basename(recorded.hostPath);
+    return {
+      ok: true,
+      container: preset.containerName,
+      started: true,
+      message: `Created ${preset.containerName}: PID 1 is ${mode.mainCommand.join(" ")}. Exact host \`docker run\` is in .monitor/${scriptHint}.${clusterStackEnv ? " Cluster \`.env\` NCCL/distributed env applied." : ""}${clusterRuntime ? " Cluster runtime: --network host, --privileged, memlock; /dev/infiniband when present." : ` Published ${hostPublish}→${containerPublish}.`} Image: ${preset.image}.`,
+    };
+  }
+
   const state = await containerState(preset.containerName);
+  const clusterStackEnv = shouldInjectSglangStackClusterDockerEnv() && preset.provider === "sglang";
+  const clusterRuntime = shouldUseSglangClusterDockerRuntime() && preset.provider === "sglang";
+  const hostPublish = sglangStackHostPort();
+  const containerPublish = "30000";
+
   if (state.kind === "running") {
     return {
       ok: true,
@@ -163,74 +307,25 @@ export async function runStackPreset(presetId: string): Promise<RunStackResult> 
     };
   }
 
-  const repoRoot = findRepoRoot();
-  const hfCache = path.join(os.homedir(), ".cache", "huggingface");
-  const shm = shmSize();
-  const hostPublish = sglangStackHostPort();
-  const containerPublish = "30000";
-
-  const wantClusterDockerEnv = shouldInjectSglangStackClusterDockerEnv();
-  const wantClusterRuntime = shouldUseSglangClusterDockerRuntime();
-  const presetSupportsCluster = preset.provider === "sglang" ;
-  const clusterStackEnv = wantClusterDockerEnv && presetSupportsCluster;
-  const clusterRuntime = wantClusterRuntime && presetSupportsCluster;
-
   if (state.kind === "stopped") {
-      const start = await dockerHost(["start", preset.containerName]);
-      if (start.code !== 0) {
-        const err = (start.stderr.trim() || start.stdout.trim()).slice(0, 800);
-        return {
-          ok: false,
-          error: err || `docker start failed (exit ${start.code ?? "?"})`,
-          stderr: start.stderr.trim() || undefined,
-        };
-      }
+    const start = await dockerHost(["start", preset.containerName]);
+    if (start.code !== 0) {
+      const err = (start.stderr.trim() || start.stdout.trim()).slice(0, 800);
       return {
-        ok: true,
-        container: preset.containerName,
-        started: true,
-        message: `Started existing container ${preset.containerName}.`,
+        ok: false,
+        error: err || `docker start failed (exit ${start.code ?? "?"})`,
+        stderr: start.stderr.trim() || undefined,
       };
-  }
-
-  
-
-  const args: string[] = ["run", "-d", "--gpus", "all"];
-  if (clusterRuntime) {
-    args.push("--network", "host");
-    args.push("--privileged");
-    if (fs.existsSync("/dev/infiniband")) {
-      args.push("-v", "/dev/infiniband:/dev/infiniband");
     }
-    args.push("--ulimit", "memlock=-1:-1");
+    return {
+      ok: true,
+      container: preset.containerName,
+      started: true,
+      message: `Started existing container ${preset.containerName}.`,
+    };
   }
-  args.push(
-    "--name",
-    preset.containerName,
-    "--shm-size",
-    shm,
-    ...(clusterRuntime ? [] : ["-p", `${hostPublish}:${containerPublish}`]),
-    "-v",
-    `${hfCache}:/root/.cache/huggingface`,
-    "-v",
-    `${repoRoot}:/workspace`,
-    "--ipc=host",
-    "--rm",
-  );
-  const token = process.env.HF_TOKEN?.trim();
-  if (token) {
-    args.push("-e", `HF_TOKEN=${token}`);
-  }
-  if (clusterStackEnv) {
-    for (const [k, v] of Object.entries(getSglangStackDockerEnvForClusterRun())) {
-      args.push("-e", `${k}=${v}`);
-    }
-  }
-  for (const e of preset.extraEnv) {
-    args.push("-e", e);
-  }
-  args.push(preset.image, "sleep", "infinity");
 
+  const args = buildSglangDockerRunArgv(preset);
   const run = await dockerHost(args);
   if (run.code !== 0) {
     const err = (run.stderr.trim() || run.stdout.trim()).slice(0, 1200);
@@ -245,7 +340,7 @@ export async function runStackPreset(presetId: string): Promise<RunStackResult> 
     ok: true,
     container: preset.containerName,
     started: true,
-    message: `Created and started ${preset.containerName} (same flags as ${preset.matchesScript}; monitor uses sleep infinity).${clusterStackEnv ? " Cluster `.env` NCCL/distributed env applied." : ""}${clusterRuntime ? " Cluster runtime: --network host, --privileged, memlock; /dev/infiniband mounted when present on host." : ""} ${clusterRuntime ? `Host network mode (service port ${containerPublish}).` : `Published ${hostPublish}→${containerPublish}.`} Repo at /workspace.`,
+    message: `Created and started ${preset.containerName} (same flags as ${preset.matchesScript}; PID 1 is sleep infinity for stack-only / exec workflows).${clusterStackEnv ? " Cluster \`.env\` NCCL/distributed env applied." : ""}${clusterRuntime ? " Cluster runtime: --network host, --privileged, memlock; /dev/infiniband when present on host." : ""} ${clusterRuntime ? `Host network mode (service port ${containerPublish}).` : `Published ${hostPublish}→${containerPublish}.`} Repo at /workspace.`,
   };
 }
 

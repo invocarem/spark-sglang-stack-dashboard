@@ -1,6 +1,6 @@
 /**
- * Logs tab: tail container main process (`docker logs` via /api/probe) vs launch script file
- * (`/api/launch/log`). Read-only; complements Launch and Tools.
+ * Logs tab: tail container main process (`docker logs` via /api/probe) vs launch script log file
+ * (`/api/launch/log`). Read-only; complements Starter and Tools.
  */
 
 import { pickPreferredContainer } from "./container-preferences";
@@ -149,7 +149,7 @@ async function refreshLog(options: { quiet?: boolean } = {}): Promise<void> {
       if (body.missing) {
         const logPath = launchLogPathForProvider();
         outEl.textContent =
-          `(No launch log file yet. Run a script from the Launch tab once, or the container cannot read ${logPath}.)`;
+          `(No launch log file yet. Run Start from the Starter tab once, or the container cannot read ${logPath}.)`;
         setStatus("Launch log file not found.");
         return;
       }
@@ -176,7 +176,7 @@ async function refreshLog(options: { quiet?: boolean } = {}): Promise<void> {
     const dockerText = formatDockerProbe(body);
     const looksEmpty = dockerText === "(No lines.)" || dockerText.trim() === "";
     outEl.textContent = looksEmpty
-      ? `${dockerText}\n\n---\nMonitor stack containers use PID 1 \`sleep infinity\`; \`docker logs\` only shows that process, not \`docker exec\` / Launch tab scripts. For model load progress and server output, switch Source to “Launch script log”.`
+      ? `${dockerText}\n\n---\nIf the server logs to /workspace/.monitor/sglang-launch.log (typical), Docker logs may stay quiet. For load progress and server output, switch Source to “Launch script log”.`
       : dockerText;
     stickToLatestLogLines();
     setStatus(`Docker logs (PID 1) — ${container}`);

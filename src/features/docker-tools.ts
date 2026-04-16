@@ -415,7 +415,7 @@ async function runTool(): Promise<void> {
       !String((body as { stdout?: string }).stdout ?? "").trim() &&
       !String((body as { stderr?: string }).stderr ?? "").trim()
     ) {
-      display = `${display}\n\n---\nMonitor stack PID 1 is usually \`sleep infinity\`, so this stays empty. For LLM/load output, open the Logs tab and use “Launch script log”.`;
+      display = `${display}\n\n---\nOutput may be redirected to /workspace/.monitor/sglang-launch.log. For LLM/load output, open the Logs tab and use “Launch script log”.`;
     }
     outEl.textContent = display;
     if (outMetaEl) {

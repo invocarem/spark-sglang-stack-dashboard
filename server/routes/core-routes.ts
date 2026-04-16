@@ -5,6 +5,7 @@ import {
   listRunningContainers,
   runToolInContainer,
   assertSafeContainerName,
+  dockerHost,
   runDiagnosticsInContainer,
   validateDiagnosticsCommand,
   validatePipelineSegments,
@@ -16,12 +17,15 @@ import {
   type LaunchProvider,
   getLaunchLogTail,
   getLaunchServerStatus,
+  LAUNCH_LOG_PATH,
   listLaunchScripts,
   runLaunchScriptInContainer,
   stopLaunchServerInContainer,
+  writeMonitorDockerExecHelper,
+  writeMonitorLaunchBundle,
 } from "../launch-scripts.js";
 import { getLaunchClusterDefaultsFromEnv } from "../launch-cluster-defaults.js";
-import { listStackPresets } from "../stack-presets.js";
+import { getStackPreset, listStackPresets } from "../stack-presets.js";
 import {
   getStackContainerLogs,
   getStackContainerStatus,
@@ -445,8 +449,12 @@ export function registerCoreRoutes(app: Hono): void {
       return c.json({ error: "Expected JSON object" }, 400);
     }
     const o = body as Record<string, unknown>;
-    const container = typeof o.container === "string" ? o.container.trim() : "";
+    try {
+    const presetId = typeof o.preset === "string" ? o.preset.trim() : "";
+    let container = typeof o.container === "string" ? o.container.trim() : "";
     const script = typeof o.script === "string" ? o.script.trim() : "";
+    const starterLegacy = typeof o.starter === "string" ? o.starter.trim() : "";
+    const scriptId = script || starterLegacy;
     const argOverrides = Array.isArray(o.argOverrides)
       ? o.argOverrides
         .filter((x): x is Record<string, unknown> => typeof x === "object" && x !== null)
@@ -469,16 +477,101 @@ export function registerCoreRoutes(app: Hono): void {
         launchEnv[k] = v;
       }
     }
-    if (!container) {
-      return c.json({ error: "Missing container" }, 400);
+    const provider = launchProvider(c);
+
+    if (presetId && scriptId) {
+      const bundle = writeMonitorLaunchBundle(provider, scriptId, argOverrides, launchEnv);
+      if (!bundle.ok) {
+        return c.json({ error: bundle.error }, 400);
+      }
+      const sp = getStackPreset(presetId);
+      if (!sp) {
+        return c.json({ error: "Unknown stack preset." }, 400);
+      }
+      const containerName = sp.containerName;
+      const inspect = await dockerHost(["inspect", "-f", "{{.State.Running}}", containerName]);
+      if (inspect.code === 0 && inspect.stdout.trim() === "true") {
+        const probe = await getLaunchServerStatus(provider, containerName);
+        if (!probe.ok) {
+          return c.json({ error: probe.error }, 400);
+        }
+        if (probe.running) {
+          return c.json(
+            {
+              error:
+                "SGLang already appears to be running in this stack container. Stop it first, or pick another preset/container.",
+              conflict: true,
+            },
+            409,
+          );
+        }
+      }
+      const execHelper = writeMonitorDockerExecHelper(provider, {
+        scriptBasename: scriptId,
+        containerName,
+        wrapperContainerPath: bundle.containerWrapperPath,
+      });
+      if (!execHelper.ok) {
+        return c.json({ error: execHelper.error }, 400);
+      }
+      const stackResult = await runStackPreset(presetId, {
+        kind: "replace",
+        mainCommand: ["sleep", "infinity"],
+      });
+      if (!stackResult.ok) {
+        return c.json(
+          { error: stackResult.error, stderr: stackResult.stderr },
+          /already in use|port is already allocated|Conflict/i.test(stackResult.error ?? "")
+            ? 409
+            : 400,
+        );
+      }
+      const execResult = await runLaunchScriptInContainer(
+        provider,
+        containerName,
+        scriptId,
+        argOverrides,
+        launchEnv,
+      );
+      if (!execResult.ok) {
+        const code = execResult.conflict ? 409 : 400;
+        return c.json(
+          { error: execResult.error, stderr: execResult.stderr, conflict: execResult.conflict === true },
+          code,
+        );
+      }
+      return c.json({
+        ok: true,
+        detached: true,
+        message: `${stackResult.message} SGLang start: docker exec (see .monitor/monitor-launch-${scriptId}.docker-exec.sh); model args in .monitor/monitor-launch-${scriptId}.rendered.body.sh; log ${LAUNCH_LOG_PATH[provider]}.`,
+      });
     }
-    if (!script) {
+
+    if (presetId) {
+      const stackResult = await runStackPreset(presetId);
+      if (!stackResult.ok) {
+        return c.json(
+          { error: stackResult.error, stderr: stackResult.stderr },
+          /already in use|port is already allocated|Conflict/i.test(stackResult.error ?? "")
+            ? 409
+            : 400,
+        );
+      }
+      const sp = getStackPreset(presetId);
+      if (!container && sp) {
+        container = sp.containerName;
+      }
+    }
+    if (!container) {
+      return c.json({ error: "Missing container (or preset to derive it)" }, 400);
+    }
+    if (!scriptId) {
       return c.json({ error: "Missing script" }, 400);
     }
     const result = await runLaunchScriptInContainer(
-      launchProvider(c),
+      provider,
       container,
-      script,
+      scriptId,
       argOverrides,
       launchEnv,
     );
@@ -495,6 +588,15 @@ export function registerCoreRoutes(app: Hono): void {
       message:
         "Start requested (detached). Refresh status below or open Metrics while the server initializes.",
     });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      return c.json(
+        {
+          error: `Launch failed: ${message}`,
+        },
+        500,
+      );
+    }
   });
 
   app.post("/api/launch/stop", async (c) => {
