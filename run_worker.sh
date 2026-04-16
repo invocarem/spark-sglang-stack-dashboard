@@ -1,0 +1,37 @@
+docker run --gpus all \
+    --name sglang_node_tf5_worker \
+    --network host \
+    --shm-size 32g \
+    -v ~/.cache/huggingface:/root/.cache/huggingface \
+    -v $(pwd):/workspace \
+    --env "HF_TOKEN=$HF_TOKEN" \
+    --env "CUDA_VISIBLE_DEVICES=0" \
+    --env "NCCL_SOCKET_IFNAME=enp1s0f1np1" \
+    --env "GLOO_SOCKET_IFNAME=enp1s0f1np1" \
+    --env "NCCL_IB_HCA=rocep1s0f1" \
+    --env "NCCL_DEBUG=INFO" \
+    --env "NCCL_IB_DISABLE=1" \
+    --env "NCCL_ASYNC_ERROR_HANDLING=1" \
+    --env "NCCL_BLOCKING_WAIT=1" \
+    --env "MASTER_ADDR=192.168.100.11" \
+    --env "MASTER_PORT=50000" \
+    --env "WORLD_SIZE=2" \
+    --env "TORCH_DISTRIBUTED_TIMEOUT=1800" \
+    --ipc=host \
+    -it --rm \
+    scitrera/dgx-spark-sglang:0.5.9-t5 \
+    python3 -m sglang.launch_server \
+        --model-path Qwen/Qwen3.5-397B-A17B-GPTQ-Int4 \
+        --served-model-name qwen \
+        --tp-size 2 \
+        --nnodes 2 \
+        --node-rank 1 \
+        --dist-init-addr 192.168.100.11:50000 \
+        --attention-backend triton \
+        --trust-remote-code \
+	--kv-cache-dtype fp8_e4m3 \
+	--context-length 65536 \
+        --mem-fraction-static 0.94 \
+	--max-running-requests 3 \
+    	--max-prefill-tokens=2048 \
+	--quantization moe_wna16
