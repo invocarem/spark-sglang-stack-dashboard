@@ -1,6 +1,6 @@
 /**
  * Tools tab: host `docker logs` / `docker inspect` plus launch script log tails.
- * Most useful here is launch script output (`/api/launch/log?lines=200`) for model loading.
+ * Most useful here is launch script output (`/api/launch/log?lines=50`) for model loading.
  */
 
 import { pickPreferredContainer } from "./container-preferences";
@@ -182,7 +182,7 @@ async function loadTools(): Promise<void> {
     selTool.innerHTML = "";
     const launchOpt = document.createElement("option");
     launchOpt.value = TOOL_LAUNCH_LOG_200;
-    launchOpt.textContent = "Launch script log — last 200 lines";
+    launchOpt.textContent = "Launch script log — last 50 lines";
     selTool.appendChild(launchOpt);
     for (const t of tools) {
       const opt = document.createElement("option");
@@ -196,7 +196,7 @@ async function loadTools(): Promise<void> {
     selTool.innerHTML = "";
     const launchOpt = document.createElement("option");
     launchOpt.value = TOOL_LAUNCH_LOG_200;
-    launchOpt.textContent = "Launch script log — last 200 lines";
+    launchOpt.textContent = "Launch script log — last 50 lines";
     selTool.appendChild(launchOpt);
     for (const t of FALLBACK_PROBE_TOOLS) {
       const opt = document.createElement("option");
@@ -371,7 +371,7 @@ async function runTool(): Promise<void> {
   try {
     if (tool === TOOL_LAUNCH_LOG_200) {
       const res = await fetch(
-        withProviderQuery(`/api/launch/log?container=${encodeURIComponent(container)}&lines=200`),
+        withProviderQuery(`/api/launch/log?container=${encodeURIComponent(container)}&lines=50`),
       );
       const body = (await res.json()) as {
         text?: string;
@@ -392,7 +392,7 @@ async function runTool(): Promise<void> {
       }
       const text = typeof body.text === "string" ? normalizeProbeText(body.text) : "";
       outEl.textContent = text.trim() ? text : "(Log file is empty.)";
-      setDockerStatus(`Launch script log (last 200 lines) — ${container}`);
+      setDockerStatus(`Launch script log (last 50 lines) — ${container}`);
       if (outMetaEl) {
         outMetaEl.textContent = "—";
         outMetaEl.classList.add("hidden");
