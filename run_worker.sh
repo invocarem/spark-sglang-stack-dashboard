@@ -1,5 +1,5 @@
 docker run --gpus all \
-    --name sglang_node_tf5_worker \
+    --name sglang_node_tf5 \
     --network host \
     --shm-size 32g \
     -v ~/.cache/huggingface:/root/.cache/huggingface \
@@ -19,7 +19,7 @@ docker run --gpus all \
     --env "TORCH_DISTRIBUTED_TIMEOUT=1800" \
     --ipc=host \
     -it --rm \
-    scitrera/dgx-spark-sglang:0.5.9-t5 \
+    scitrera/dgx-spark-sglang:0.5.9-dev2-acab24a7-t5 \
     python3 -m sglang.launch_server \
         --model-path Qwen/Qwen3.5-397B-A17B-GPTQ-Int4 \
         --served-model-name qwen \
