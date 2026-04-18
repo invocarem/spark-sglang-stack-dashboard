@@ -144,7 +144,7 @@ export function buildSglangDockerRunArgv(
     "-v",
     `${hfCache}:/root/.cache/huggingface`,
     "-v",
-    `${localDir}:/models`,
+    `${localDir}:/data/hf`,
      "-v",
     `${repoRoot}:/workspace`,
     "--ipc=host",

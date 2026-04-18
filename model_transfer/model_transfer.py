@@ -293,6 +293,12 @@ class ModelTransfer:
         
     def _scan_directory(self) -> List[FileInfo]:
         """Scan directory for all files."""
+        if not self.src_dir.is_dir():
+            print(
+                f"Note: --src is not a directory ({self.src_dir}); "
+                "using empty file list (normal on rank>0 when only the sender has the model)."
+            )
+            return []
         files = []
         for root, _, filenames in os.walk(self.src_dir):
             for filename in filenames:
@@ -357,31 +363,61 @@ class ModelTransfer:
             print(f"Transferring {file_info.path} ({file_info.size / 1e9:.2f} GB)")
             transfer.send_file_parallel(str(src_path), str(dest_path))
     
-    def transfer_rdma(self, rank: int, world_size: int, master_addr: str, master_port: int):
-        """Transfer using RDMA via PyTorch distributed."""
+    def transfer_rdma(
+        self,
+        rank: int,
+        world_size: int,
+        master_addr: str,
+        master_port: int,
+        *,
+        sender_send_all: bool = False,
+    ):
+        """Transfer using PyTorch distributed (Gloo or NCCL).
+
+        Rank 0 builds the file list and broadcasts a (path, size) manifest so rank>0
+        does not need a local copy of --src (typical for Docker: model only on master).
+        """
         if not self.use_rdma:
             print("PyTorch is not available. Install with: pip install torch")
             if _TORCH_IMPORT_ERROR is not None:
                 print(f"Import error: {_TORCH_IMPORT_ERROR}")
             return False
-        
-        # Check existing files
-        to_transfer = self._check_existing(self.dest_dir)
-        if not to_transfer:
-            print("All files already exist at destination")
-            return True
-        
-        print(f"Transferring {len(to_transfer)} files using RDMA...")
-        
-        # Initialize RDMA transfer
+
+        if rank == 0 and not self.files:
+            print("Error: no files under --src on rank 0 (check path and permissions).")
+            return False
+
         rdma = RDMATransfer(rank, world_size, master_addr, master_port)
-        
         try:
-            # Both ranks must call send_file: broadcast is collective; rank 0 reads
-            # disk, rank 1 writes to dest_path (src path is ignored on receiver).
-            for file_info in to_transfer:
-                src_path = self.src_dir / file_info.path
-                dest_path = self.dest_dir / file_info.path
+            if rank == 0:
+                if sender_send_all:
+                    to_transfer = list(self.files)
+                else:
+                    to_transfer = self._check_existing(self.dest_dir)
+                manifest: List[Tuple[str, int]] = [(f.path, f.size) for f in to_transfer]
+                object_list = [manifest]
+            else:
+                object_list = [None]
+
+            dist.broadcast_object_list(object_list, src=0)
+            manifest = object_list[0]
+            assert manifest is not None
+
+            if not manifest:
+                if rank == 0:
+                    print("Nothing to transfer (all files already at destination, or empty manifest).")
+                else:
+                    print("Receiver: manifest is empty; nothing to do.")
+                return True
+
+            if rank == 0:
+                print(f"Transferring {len(manifest)} files via {rdma.backend}...")
+            else:
+                print(f"Receiving {len(manifest)} files into {self.dest_dir}...")
+
+            for path, _size in manifest:
+                src_path = self.src_dir / path
+                dest_path = self.dest_dir / path
                 rdma.send_file(str(src_path), str(dest_path))
 
             return True
@@ -465,6 +501,15 @@ def main():
         default=_mt_env_int('MASTER_PORT', 29500),
         help='Master port',
     )
+    parser.add_argument(
+        '--all-files',
+        action='store_true',
+        help=(
+            'Rank 0 only: send every file under --src without skipping files that already '
+            'exist at --dest (use when --src and --dest are the same path and you still '
+            'want to push to rank>0).'
+        ),
+    )
 
     # Parallel TCP options
     parser.add_argument(
@@ -500,6 +545,10 @@ def main():
 
     args = parser.parse_args()
 
+    if args.mode == 'rdma' and args.rank == 0:
+        if not Path(args.src).is_dir():
+            parser.error(f'--src must exist and be a directory on rank 0: {args.src!r}')
+
     if not args.src or not args.dest:
         parser.error(
             f'Source and destination are required (use --src/--dest or '
@@ -523,7 +572,8 @@ def main():
             rank=args.rank,
             world_size=args.world_size,
             master_addr=args.master_addr,
-            master_port=args.master_port
+            master_port=args.master_port,
+            sender_send_all=args.all_files,
         )
     elif args.mode == 'parallel_tcp':
         transfer.transfer_parallel_tcp(
