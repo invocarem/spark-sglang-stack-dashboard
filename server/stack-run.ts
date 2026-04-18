@@ -292,6 +292,13 @@ export async function runStackPreset(
     };
   }
 
+  const args = buildSglangDockerRunArgv(preset);
+  const recorded = writeMonitorStackDockerRunScript(preset, args);
+  if (!recorded.ok) {
+    return { ok: false, error: recorded.error };
+  }
+  const scriptHint = path.basename(recorded.hostPath);
+
   const state = await containerState(preset.containerName);
   const clusterStackEnv = shouldInjectSglangStackClusterDockerEnv() && preset.provider === "sglang";
   const clusterRuntime = shouldUseSglangClusterDockerRuntime() && preset.provider === "sglang";
@@ -303,7 +310,7 @@ export async function runStackPreset(
       ok: true,
       container: preset.containerName,
       started: false,
-      message: `Container ${preset.containerName} is already running.`,
+      message: `Container ${preset.containerName} is already running. Refreshed .monitor/${scriptHint}.`,
     };
   }
 
@@ -321,11 +328,10 @@ export async function runStackPreset(
       ok: true,
       container: preset.containerName,
       started: true,
-      message: `Started existing container ${preset.containerName}.`,
+      message: `Started existing container ${preset.containerName}. Refreshed .monitor/${scriptHint}.`,
     };
   }
 
-  const args = buildSglangDockerRunArgv(preset);
   const run = await dockerHost(args);
   if (run.code !== 0) {
     const err = (run.stderr.trim() || run.stdout.trim()).slice(0, 1200);
@@ -340,7 +346,7 @@ export async function runStackPreset(
     ok: true,
     container: preset.containerName,
     started: true,
-    message: `Created and started ${preset.containerName} (same flags as ${preset.matchesScript}; PID 1 is sleep infinity for stack-only / exec workflows).${clusterStackEnv ? " Cluster \`.env\` NCCL/distributed env applied." : ""}${clusterRuntime ? " Cluster runtime: --network host, --privileged, memlock; /dev/infiniband when present on host." : ""} ${clusterRuntime ? `Host network mode (service port ${containerPublish}).` : `Published ${hostPublish}→${containerPublish}.`} Repo at /workspace.`,
+    message: `Created and started ${preset.containerName} (same flags as ${preset.matchesScript}; PID 1 is sleep infinity for stack-only / exec workflows). Exact host \`docker run\` is in .monitor/${scriptHint}.${clusterStackEnv ? " Cluster \`.env\` NCCL/distributed env applied." : ""}${clusterRuntime ? " Cluster runtime: --network host, --privileged, memlock; /dev/infiniband when present on host." : ""} ${clusterRuntime ? `Host network mode (service port ${containerPublish}).` : `Published ${hostPublish}→${containerPublish}.`} Repo at /workspace.`,
   };
 }
 

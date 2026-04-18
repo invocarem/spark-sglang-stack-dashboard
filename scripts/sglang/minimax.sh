@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Configuration variables
-MODEL="/models/minimax"
+MODEL="/data/hf/minimax"
 SERVED_MODEL_NAME="minimax"
 CONTEXT_LENGTH=32768
 MEM_FRACTION_STATIC=0.8
