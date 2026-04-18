@@ -24,5 +24,6 @@ python3 -m sglang.launch_server \
     --tool-call-parser ${TOOL_CALL_PARSER} \
     --reasoning-parser minimax-append-think \
     --mem-fraction-static 0.94 \
-    --max-total-tokens 4096 \
-    --max-running-requests 1 
+    --max-total-tokens 1024 \
+    --max-running-requests 1 \
+    --kv-cache-dtype fp8_e4m3 
