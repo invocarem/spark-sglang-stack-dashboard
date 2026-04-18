@@ -5,9 +5,9 @@ Use the IP spark2 uses to reach spark1 (often the same interface as NCCL_SOCKET_
 cd /path/inside/container/to/spark-sglang-stack-dashboard/model_transfer
 export MODEL_TRANSFER_TORCH_BACKEND=nccl
 # spark1 — model must exist under /data/hf/MODEL
-./hf_transfer.sh 0 /data/hf/MODEL /data/hf/MODEL 192.168.x.x
+./hf_transfer.sh 0 /data/hf/MODEL /data/hf/MODEL 192.168.100.11
 # spark2 — /data/hf/MODEL can be empty; first arg can be a dummy dir
-./hf_transfer.sh 1 /tmp/.unused /data/hf/MODEL 192.168.x.x
+./hf_transfer.sh 1 /tmp/.unused /data/hf/MODEL 192.168.100.11
 ```
 
 If on spark1 --src and --dest are the same and you still want a full push to spark2:

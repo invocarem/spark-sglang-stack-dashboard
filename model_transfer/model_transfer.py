@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import pickle
 
+import numpy as np
+
 # PyTorch is required for --mode rdma (distributed transfer).
 _TORCH_IMPORT_ERROR: Optional[ImportError] = None
 try:
@@ -146,8 +148,11 @@ class RDMATransfer:
         if self.rank == 0:  # Sender
             with open(file_path, 'rb') as f:
                 data = f.read()
-            
-            tensor = torch.tensor(list(data), dtype=torch.uint8, device=dev)
+            # Avoid list(data): one Python int per byte makes multi-GB sends impractically slow.
+            tensor_cpu = torch.as_tensor(
+                np.frombuffer(data, dtype=np.uint8), dtype=torch.uint8
+            )
+            tensor = tensor_cpu.to(dev, non_blocking=(dev.type == 'cuda'))
             size_tensor = torch.tensor([len(data)], dtype=torch.long, device=dev)
             dist.broadcast(size_tensor, src=0)
             dist.broadcast(tensor, src=0)
