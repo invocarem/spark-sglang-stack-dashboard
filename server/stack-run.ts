@@ -2,12 +2,9 @@
  * Host API: start/stop whitelisted stack containers (`docker run`, start, stop).
  * Preset ids and images are defined in `stack-presets.ts`.
  *
- * Each preset mirrors the flags in repo `containers/sglang/run-docker*.sh` (SGLang) or
- * `containers/vllm/run-docker*.sh` (vLLM).
+ * Each preset mirrors the flags in repo `containers/sglang/run-docker*.sh` (SGLang). 
  * Multi-node: `MONITOR_CLUSTER_APPLY` or `MONITOR_STACK_SGLANG_CLUSTER_RUNTIME=1` adds
  * `--network host`, `--privileged`, optional `/dev/infiniband`, `memlock` ulimit; see `launch-cluster-defaults.ts`.
- * The same cluster env/runtime applies to **vLLM** presets when those flags are set (SGLang behavior is unchanged:
- * for `provider === "sglang"`, the booleans match the previous `sglang && …` expressions exactly).
  *
  * **Starter tab (preset + script):** `launch-scripts.writeMonitorLaunchBundle` writes
  * `.monitor/monitor-launch-<script>.rendered.{body,sh}.sh`; the API runs `docker run … sleep infinity` (PID&nbsp;1 idle),

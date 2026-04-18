@@ -9,7 +9,7 @@ const statusProvider = document.querySelector<HTMLSpanElement>("#status-provider
 const btnResetLog = document.querySelector<HTMLButtonElement>("#btn-footer-reset-log");
 
 function normalizeProvider(input: string | null | undefined): MonitorProvider {
-  return input === "vllm" ? "vllm" : "sglang";
+  return DEFAULT_PROVIDER;
 }
 
 export function getMonitorProvider(): MonitorProvider {

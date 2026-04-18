@@ -262,24 +262,6 @@ export const TOOLS: readonly ToolMeta[] = [
     runner: "python3",
   },
   {
-    id: "benchmark_vllm",
-    label: "benchmark_vllm.py",
-    description:
-      "Runs `vllm bench serve` against VLLM_BASE_URL (default :8000). BENCHMARK_EXTRA_REQUEST_BODY → --extra-body. Set VLLM_BENCH_CMD if `vllm` is not on PATH.",
-    format: "text",
-    path: `${WORKSPACE_TOOLS}/benchmark_vllm.py`,
-    runner: "python3",
-  },
-  {
-    id: "chat_no_thinking",
-    label: "chat_no_thinking.py",
-    description:
-      "POST /v1/chat/completions with chat_template_kwargs.enable_thinking=false and separate_reasoning=false (Qwen3 smoke test; SGLANG_BASE_URL / CHAT_BASE_URL / CHAT_MODEL)",
-    format: "json",
-    path: `${WORKSPACE_TOOLS}/chat_no_thinking.py`,
-    runner: "python3",
-  },
-  {
     id: "task_benchmark",
     label: "task_benchmark.py",
     description:
@@ -311,17 +293,7 @@ export const TOOLS: readonly ToolMeta[] = [
       "Container: two commands piped — A e.g. env, ibv_devinfo; B e.g. grep NC, head -20 (same safety as Diagnostics)",
     format: "text",
     kind: "pipe_probe",
-  },
-  {
-    id: "vllm_launch_serve",
-    label: "vLLM: launch serve.sh (detached)",
-    description:
-      "docker exec -d: runs repo scripts/vllm/serve.sh; stdout/stderr → /workspace/.monitor/vllm-launch.log (requires idle stack, PID1 sleep)",
-    format: "text",
-    kind: "detached_bash_logged",
-    scriptPath: "/workspace/scripts/vllm/serve.sh",
-    logPath: "/workspace/.monitor/vllm-launch.log",
-  },
+  }
 ] as const;
 
 const TOOL_BY_ID = new Map(TOOLS.map((t) => [t.id, t]));

@@ -72,13 +72,6 @@ const SGLANG_LAUNCH_LINE_RE =
  */
 const SGLANG_PGREP_ERE = String.raw`sglang\.launch_server|sglang serve`;
 
-/**
- * `pgrep -f` extended regex for a running `vllm serve …` process.
- * Use `[v]llm serve` so the pattern does not match the `pgrep` command line itself (which would
- * otherwise contain the literal substring `vllm serve` and falsely report the server as running).
- */
-const VLLM_PGREP_ERE = "[v]llm serve";
-
 /** Render terminal CR behavior so progress bars update in-place. */
 export function normalizeLaunchLogText(text: string): string {
   if (!text) return text;
