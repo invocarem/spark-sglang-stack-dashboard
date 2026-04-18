@@ -52,11 +52,11 @@
           <section class="panel panel-nested">
             <h2 id="launch-title">Starter — SGLang</h2>
             <p class="launch-lead">
-              Choose a <strong>stack preset</strong> and a <strong>script</strong>, then use
-              <strong>Start</strong> — creates/refreshes the stack with PID&nbsp;1 <code>sleep infinity</code>, then runs SGLang from your
+              Choose a <strong>stack preset</strong> and a <strong>script</strong> (first option <strong>Stack only</strong> = idle container, no inference server).               Use
+              <strong>Refresh status</strong> first (Docker container for the preset, container list, inference server), then <strong>Start</strong> — creates/refreshes the stack with PID&nbsp;1 <code>sleep infinity</code>, then runs SGLang from your
               <code>.sh</code> via <code>docker exec</code> so the container stays up if the server exits. Output goes to
               <code id="launch-log-path-label">/workspace/.monitor/sglang-launch.log</code> (see <strong>Logs</strong>).
-              <strong>Check status</strong> re-probes the stack for your preset and SGLang in the target container (change preset for another stack, or use Advanced to pick a container). <strong>Stop SGLang</strong> stops inference only (container keeps running). <strong>Stop container</strong> runs <code>docker stop</code> on the stack preset container (with <code>--rm</code> it is removed).
+              <strong>Refresh status</strong> updates both lines below. <strong>Stop SGLang</strong> stops inference only (container keeps running). <strong>Stop container</strong> runs <code>docker stop</code> on the stack preset container (with <code>--rm</code> it is removed). Use <strong>Advanced</strong> to target a different container for the server line and stops.
             </p>
             <details class="launch-more">
               <summary>How it works</summary>
@@ -81,7 +81,7 @@
               </label>
               <label class="field field-grow">
                 <span>Script</span>
-                <select id="sel-launch-script" aria-label="Launch script (.sh)"></select>
+                <select id="sel-launch-script" aria-label="Launch script (.sh) or stack only"></select>
               </label>
             </div>
             <div class="launch-args-editor">
@@ -149,11 +149,11 @@
             </details>
 
             <div class="launch-toolbar launch-toolbar--primary">
-              <button type="button" id="btn-launch-run" class="btn primary">Start</button>
               <button type="button" id="btn-launch-refresh-status" class="btn"
-                title="Re-check Docker stack (preset) and whether SGLang is running in the target container.">
-                Check status
+                title="Reload running-container list, re-check whether the stack preset’s container is up, and probe the inference server in the target container.">
+                Refresh status
               </button>
+              <button type="button" id="btn-launch-run" class="btn primary">Start</button>
               <button type="button" id="btn-launch-stop-server" class="btn"
                 title="Stop SGLang (launch_server) in the target container — SIGTERM, then SIGKILL if needed. Docker stack keeps running.">
                 Stop SGLang
@@ -165,29 +165,22 @@
             </div>
 
             <details class="launch-more launch-advanced" id="launch-advanced-section">
-              <summary>Advanced — Docker stack &amp; container</summary>
+              <summary>Advanced — target container</summary>
               <p class="hint">
-                Use this if you need to stop the whole stack container, pick a different container for status checks, or
-                refresh lists manually.
+                Override which container is used for the <strong>Inference server</strong> line and for <strong>Stop SGLang</strong> / <strong>Stop container</strong> (default is the stack preset’s name when it appears in <code>docker ps</code>).
               </p>
-              <p id="status-launch-stack" class="status" aria-live="polite"></p>
-              <div class="launch-toolbar launch-stack-toolbar">
-                <button type="button" id="btn-launch-stack-refresh" class="btn">Refresh stack status</button>
-                <button type="button" id="btn-launch-stack-stop" class="btn">Stop stack container</button>
-              </div>
               <div class="launch-fields">
                 <label class="field field-grow">
                   <span>Container (status / stop target when changed)</span>
-                  <select id="sel-launch-container" aria-label="Container for status, Stop SGLang, Stop container, and Stop stack container"></select>
+                  <select id="sel-launch-container" aria-label="Container for inference status, Stop SGLang, and Stop container"></select>
                 </label>
-              </div>
-              <div class="launch-toolbar">
-                <button type="button" id="btn-launch-refresh-containers" class="btn">Refresh containers</button>
-                <button type="button" id="btn-launch-check-server" class="btn">Check server</button>
               </div>
             </details>
 
             <div class="launch-status-box">
+              <p class="launch-status-heading" id="launch-status-h-stack">Docker container (stack preset)</p>
+              <p id="status-launch-stack" class="status" aria-live="polite"></p>
+              <p class="launch-status-heading" id="launch-status-h-server">Inference server (target container)</p>
               <p id="status-launch-server" class="status" aria-live="polite"></p>
               <p id="status-launch-detail" class="status status--meta" aria-live="polite" hidden></p>
               <div class="launch-apply-row">
@@ -203,7 +196,7 @@
             <h2>Chat &amp; Benchmark model id</h2>
             <p class="launch-lead">
               Must match <code>--served-model-name</code> from your launch script. Saved in this browser;
-              <strong>Check server</strong> syncs it to the running server’s model id when they differ.
+              <strong>Refresh status</strong> on Starter syncs it to the running server’s model id when they differ.
             </p>
             <label class="field field-grow">
               <span>Model id</span>

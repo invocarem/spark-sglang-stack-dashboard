@@ -1,8 +1,11 @@
 /**
- * Starter tab: stack preset + `scripts/<provider>/*.sh`. **Start** calls `POST /api/launch` with `preset` + `script`
- * so the server runs the stack and the shell script in one request.
+ * Starter tab: stack preset + `scripts/<provider>/*.sh`, or **stack only** (idle `sleep infinity`, no launch script).
+ * **Start** calls `POST /api/launch` (preset + script) or `POST /api/stack/run` (preset only).
  * Server status: `GET /api/launch/status` (pgrep, then served model from ps /v1/models).
  */
+
+/** Sentinel `select` value: start Docker stack only (`POST /api/stack/run`), no `docker exec` launch script. */
+const SCRIPT_STACK_ONLY = "__stack_only__";
 
 import {
   type MonitorProvider,
@@ -39,8 +42,6 @@ type LaunchArgPair = {
   enabled: boolean;
 };
 
-const btnRefresh = document.querySelector<HTMLButtonElement>("#btn-launch-refresh-containers");
-const btnCheck = document.querySelector<HTMLButtonElement>("#btn-launch-check-server");
 const selContainer = document.querySelector<HTMLSelectElement>("#sel-launch-container");
 const selScript = document.querySelector<HTMLSelectElement>("#sel-launch-script");
 const launchArgsList = document.querySelector<HTMLDivElement>("#launch-args-list");
@@ -78,6 +79,20 @@ let lastServerRunning: boolean | null = null;
 let lastServedModel: string | null = null;
 const scriptsById = new Map<string, LaunchScriptInfo>();
 
+function stackOnlyScriptLabel(): string {
+  return getMonitorProvider() === "vllm"
+    ? "Stack only — do not start vLLM (idle container)"
+    : "Stack only — do not start SGLang (idle container)";
+}
+
+function prependStackOnlyScriptOption(): void {
+  if (!selScript) return;
+  const opt = document.createElement("option");
+  opt.value = SCRIPT_STACK_ONLY;
+  opt.textContent = stackOnlyScriptLabel();
+  selScript.insertBefore(opt, selScript.firstChild);
+}
+
 type StackPreset = {
   id: string;
   label: string;
@@ -86,8 +101,6 @@ type StackPreset = {
 };
 
 const selStackPreset = document.querySelector<HTMLSelectElement>("#sel-launch-stack-preset");
-const btnLaunchStackRefresh = document.querySelector<HTMLButtonElement>("#btn-launch-stack-refresh");
-const btnLaunchStackStop = document.querySelector<HTMLButtonElement>("#btn-launch-stack-stop");
 const statusLaunchStackEl = document.querySelector<HTMLParagraphElement>("#status-launch-stack");
 const launchStackScriptsLabel = document.querySelector<HTMLElement>("#launch-stack-scripts-label");
 
@@ -161,8 +174,6 @@ function setStackHostStatus(message: string, isError = false): void {
 }
 
 function setStackToolbarBusy(busy: boolean): void {
-  if (btnLaunchStackRefresh) btnLaunchStackRefresh.disabled = busy;
-  if (btnLaunchStackStop) btnLaunchStackStop.disabled = busy;
   if (btnStopStackPrimary) btnStopStackPrimary.disabled = busy;
 }
 
@@ -240,25 +251,28 @@ async function loadStackPresets(): Promise<void> {
 async function refreshStackHostStatus(): Promise<void> {
   const p = selectedStackPreset();
   if (!p) {
-    setStackHostStatus("Select a stack preset.", true);
+    setStackHostStatus("Container: — select a stack preset.", true);
     return;
   }
   try {
     const res = await fetch("/api/containers");
     const body = (await res.json()) as { containers?: ContainerRow[]; error?: string };
     if (!res.ok) {
-      setStackHostStatus(body.error ?? `Could not list containers (${res.status}).`, true);
+      setStackHostStatus(
+        `Container: — could not list Docker (${body.error ?? `HTTP ${res.status}`}).`,
+        true,
+      );
       return;
     }
     const rows = body.containers ?? [];
     const row = rows.find((r) => stripSlashName(r.Names) === p.containerName);
     if (row) {
       setStackHostStatus(
-        `Stack container running — ${p.containerName} (${row.Image}), state: ${row.State}.`,
+        `Container: running — ${p.containerName} (${row.Image}), state ${row.State}.`,
       );
     } else {
       setStackHostStatus(
-        `Stack container not running — ${p.containerName} is not in docker ps. Start will run it.`,
+        `Container: not running — ${p.containerName} is not in docker ps. Start can create or start it.`,
       );
     }
   } catch (e) {
@@ -266,15 +280,26 @@ async function refreshStackHostStatus(): Promise<void> {
   }
 }
 
+/** Reload container list, preset stack line, and inference probe (one primary control). */
+async function refreshStarterStatus(): Promise<void> {
+  if (btnRefreshStatus) btnRefreshStatus.disabled = true;
+  try {
+    await refreshStackHostStatus();
+    await loadContainers();
+  } finally {
+    if (btnRefreshStatus) btnRefreshStatus.disabled = false;
+  }
+}
+
 async function stopStackHost(): Promise<void> {
   const container = statusTargetContainer();
   if (!container) {
-    setStackHostStatus("Pick a stack preset (or a container under Advanced).", true);
+    setStackHostStatus("Container: — pick a stack preset (or a container under Advanced).", true);
     return;
   }
   if (!isStackPresetContainerName(container)) {
     setStackHostStatus(
-      `Cannot stop “${container}” here — not a stack preset container. Use Docker directly, or pick a preset container.`,
+      `Container: — cannot stop “${container}” here (not a stack preset). Use Docker or pick a preset container.`,
       true,
     );
     return;
@@ -295,8 +320,7 @@ async function stopStackHost(): Promise<void> {
       return;
     }
     setStackHostStatus(body.message ?? "Stopped.");
-    await refreshStackHostStatus();
-    await loadContainers();
+    await refreshStarterStatus();
   } catch (e) {
     setStackHostStatus(e instanceof Error ? e.message : String(e), true);
   } finally {
@@ -344,6 +368,12 @@ function setApplyModelButton(visible: boolean, modelLabel?: string): void {
 function renderLaunchArgs(scriptId: string): void {
   if (!launchArgsList || !launchArgsEmpty) return;
   launchArgsList.innerHTML = "";
+  if (scriptId === SCRIPT_STACK_ONLY) {
+    launchArgsEmpty.hidden = false;
+    launchArgsEmpty.textContent =
+      "Stack only — idle Docker stack (PID 1 sleep). No launch script or args; Start runs the preset container only.";
+    return;
+  }
   const info = scriptsById.get(scriptId);
   const args = info?.launchArgs ?? [];
   if (args.length === 0) {
@@ -381,6 +411,7 @@ function renderLaunchArgs(scriptId: string): void {
 }
 
 function collectLaunchArgsOverrides(scriptId: string): LaunchArgPair[] {
+  if (scriptId === SCRIPT_STACK_ONLY) return [];
   const info = scriptsById.get(scriptId);
   if (!launchArgsList || !info) return [];
   const rows = Array.from(launchArgsList.querySelectorAll<HTMLLabelElement>(".launch-arg-row"));
@@ -540,12 +571,17 @@ function updateRunButtonState(): void {
   if (!btnRun || !selScript) return;
   const presetId = selStackPreset?.value.trim() ?? "";
   const s = selScript.value.trim();
-  const blocked = lastServerRunning === true;
+  const stackOnly = s === SCRIPT_STACK_ONLY;
+  /** Full launch is blocked if inference is already up; stack-only can still start/reuse the idle container. */
+  const blocked = lastServerRunning === true && !stackOnly;
   /** Preset implies a target container name; Start will run the stack if `docker ps` is empty. */
   btnRun.disabled = !presetId || !s || blocked;
   if (blocked) {
     btnRun.title =
-      "SGLang appears to be running (last check). Stop SGLang first, or use Advanced to check another container.";
+      "Inference server appears to be running (last check). Stop it first, or use Advanced to check another container.";
+  } else if (stackOnly && lastServerRunning === true) {
+    btnRun.title =
+      "Starts or reuses the idle stack container only; does not start the inference server (see Script for a launch .sh).";
   } else {
     btnRun.removeAttribute("title");
   }
@@ -571,13 +607,16 @@ async function refreshLaunchStatus(): Promise<void> {
     lastServerRunning = null;
     lastServedModel = null;
     setApplyModelButton(false);
-    setServerStatusLine("idle", "Pick a stack preset to see SGLang status.", null);
+    setServerStatusLine(
+      "idle",
+      "Server: — pick a stack preset, or open Advanced to choose a container.",
+      null,
+    );
     updateRunButtonState();
     return;
   }
 
-  setServerStatusLine("loading", `Checking ${container}…`, null);
-  if (btnCheck) btnCheck.disabled = true;
+  setServerStatusLine("loading", `Server: checking ${container}…`, null);
   if (btnStopServer) btnStopServer.disabled = true;
   try {
     const res = await fetch(
@@ -596,10 +635,9 @@ async function refreshLaunchStatus(): Promise<void> {
       setApplyModelButton(false);
       setServerStatusLine(
         "error",
-        body.error ?? `Could not check launch server (HTTP ${res.status}).`,
+        `Server: — ${body.error ?? `could not probe (HTTP ${res.status}).`}`,
         null,
       );
-      updateRunButtonState();
       return;
     }
 
@@ -607,8 +645,7 @@ async function refreshLaunchStatus(): Promise<void> {
       lastServerRunning = null;
       lastServedModel = null;
       setApplyModelButton(false);
-      setServerStatusLine("error", body.error ?? "Unexpected status response.", null);
-      updateRunButtonState();
+      setServerStatusLine("error", `Server: — ${body.error ?? "unexpected response."}`, null);
       return;
     }
 
@@ -619,8 +656,8 @@ async function refreshLaunchStatus(): Promise<void> {
           ? body.servedModel
           : null;
       const main = lastServedModel
-        ? `Running — served model: ${lastServedModel}. Start disabled.`
-        : `Running — served model not detected yet (Advanced → Check server). Start disabled.`;
+        ? `Server: running — model ${lastServedModel}. (Full launch Start is disabled while server is up.)`
+        : `Server: running — model not detected yet; wait or refresh. (Full launch Start is disabled.)`;
       setServerStatusLine("ok", main, body.detail?.trim() || null);
       if (lastServedModel && getPreferredModel().trim() !== lastServedModel) {
         setPreferredModel(lastServedModel);
@@ -634,17 +671,22 @@ async function refreshLaunchStatus(): Promise<void> {
     } else {
       lastServedModel = null;
       setApplyModelButton(false);
-      setServerStatusLine("ok", "Not running — you can Start a launch script.", body.detail?.trim() || null);
+      setServerStatusLine(
+        "ok",
+        "Server: not running — you can Start a launch script or Stack only.",
+        body.detail?.trim() || null,
+      );
     }
-    updateRunButtonState();
   } catch (e) {
     lastServerRunning = null;
     lastServedModel = null;
     setApplyModelButton(false);
-    setServerStatusLine("error", e instanceof Error ? e.message : String(e), null);
-    updateRunButtonState();
+    setServerStatusLine(
+      "error",
+      `Server: — ${e instanceof Error ? e.message : String(e)}`,
+      null,
+    );
   } finally {
-    if (btnCheck) btnCheck.disabled = false;
     updateRunButtonState();
   }
 }
@@ -669,16 +711,15 @@ async function loadScripts(): Promise<void> {
       return;
     }
     if (scripts.length === 0) {
-      const opt = document.createElement("option");
-      opt.value = "";
-      const provider = getMonitorProvider();
-      opt.textContent = `(no .sh files in ./scripts/${provider})`;
-      selScript.appendChild(opt);
+      prependStackOnlyScriptOption();
       setScriptStatus(
-        `No launch scripts found (repo ./scripts/${provider}). Set MONITOR_REPO_ROOT if the API runs outside the repo.`,
+        `No launch scripts in ./scripts/${getMonitorProvider()}. You can still Start with “${stackOnlyScriptLabel()}”, or set MONITOR_REPO_ROOT if the API runs outside the repo.`,
       );
+      renderLaunchArgs(SCRIPT_STACK_ONLY);
+      updateRunButtonState();
       return;
     }
+    prependStackOnlyScriptOption();
     for (const s of scripts) {
       scriptsById.set(s.id, s);
       const opt = document.createElement("option");
@@ -702,7 +743,6 @@ async function loadScripts(): Promise<void> {
 async function loadContainers(): Promise<void> {
   if (!selContainer) return;
   setScriptStatus("Loading containers…");
-  if (btnRefresh) btnRefresh.disabled = true;
   try {
     const res = await fetch("/api/containers");
     const body = (await res.json()) as {
@@ -725,7 +765,7 @@ async function loadContainers(): Promise<void> {
       setApplyModelButton(false);
       setServerStatusLine(
         "error",
-        "No running containers. Choose a preset and click Start — the server creates or starts the stack, then runs the script.",
+        "Server: — no running containers. Start can create the stack; use Refresh status after starting.",
         null,
       );
       setScriptStatus("No running containers yet (Start will bring up the stack).", true);
@@ -749,8 +789,6 @@ async function loadContainers(): Promise<void> {
     await refreshLaunchStatus();
   } catch (e) {
     setScriptStatus(e instanceof Error ? e.message : String(e), true);
-  } finally {
-    if (btnRefresh) btnRefresh.disabled = false;
   }
 }
 
@@ -762,7 +800,7 @@ async function stopLaunchServer(): Promise<void> {
   }
   setScriptStatus("Stopping launch_server…");
   if (btnStopServer) btnStopServer.disabled = true;
-  if (btnCheck) btnCheck.disabled = true;
+  if (btnRefreshStatus) btnRefreshStatus.disabled = true;
   try {
     const res = await fetch(withProviderQuery("/api/launch/stop"), {
       method: "POST",
@@ -789,7 +827,79 @@ async function stopLaunchServer(): Promise<void> {
     setScriptStatus(e instanceof Error ? e.message : String(e), true);
     await refreshLaunchStatus();
   } finally {
-    if (btnCheck) btnCheck.disabled = false;
+    if (btnRefreshStatus) btnRefreshStatus.disabled = false;
+    updateRunButtonState();
+  }
+}
+
+/** Idle stack via `POST /api/stack/run` — no launch script / `docker exec`. */
+async function runStackOnlyIdle(): Promise<void> {
+  if (!btnRun) return;
+  const preset = selectedStackPreset();
+  if (!preset) {
+    setScriptStatus("Pick a stack preset.", true);
+    return;
+  }
+  setScriptStatus("Starting Docker stack (idle, no launch script)…");
+  btnRun.disabled = true;
+  try {
+    const res = await fetch("/api/stack/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ preset: preset.id }),
+    });
+    const raw = await res.text();
+    let body: {
+      ok?: boolean;
+      message?: string;
+      error?: string;
+      stderr?: string;
+    } = {};
+    if (raw.length > 0) {
+      try {
+        body = JSON.parse(raw) as typeof body;
+      } catch {
+        const hint =
+          raw.trimStart().startsWith("<") || raw.includes("<!DOCTYPE")
+            ? " Got HTML instead of JSON — use npm run dev (or vite preview with API on :8787), not a static file server alone."
+            : "";
+        setScriptStatus(
+          `Invalid JSON from server (HTTP ${res.status}).${hint} First bytes: ${raw.slice(0, 160).replace(/\s+/g, " ")}`,
+          true,
+        );
+        return;
+      }
+    }
+
+    if (!res.ok) {
+      const parts = [body.error ?? `HTTP ${res.status}`];
+      if (body.stderr) parts.push(body.stderr);
+      setScriptStatus(parts.join(" — "), true);
+      await refreshStarterStatus();
+      return;
+    }
+
+    await refreshStarterStatus();
+    if (selContainer && preset.containerName) {
+      const c = preset.containerName;
+      const hasOption = Array.from(selContainer.options).some((o) => o.value === c);
+      if (!hasOption && c) {
+        const opt = document.createElement("option");
+        opt.value = c;
+        opt.textContent = c;
+        selContainer.appendChild(opt);
+      }
+      selContainer.value = c;
+    }
+    await refreshLaunchStatus();
+
+    setScriptStatus(
+      `${body.message ?? "Stack started."} No inference server started — pick a launch script and Start again when ready.`,
+    );
+    window.setTimeout(() => void refreshLaunchStatus(), 2000);
+  } catch (e) {
+    setScriptStatus(e instanceof Error ? e.message : String(e), true);
+  } finally {
     updateRunButtonState();
   }
 }
@@ -804,6 +914,10 @@ async function runLaunchScript(): Promise<void> {
   const script = selScript.value.trim();
   if (!script) {
     setScriptStatus("Pick a launch script.", true);
+    return;
+  }
+  if (script === SCRIPT_STACK_ONLY) {
+    await runStackOnlyIdle();
     return;
   }
   const argOverrides = mergeClusterQuickOverrides(collectLaunchArgsOverrides(script));
@@ -854,12 +968,11 @@ async function runLaunchScript(): Promise<void> {
         lastServerRunning = true;
         await refreshLaunchStatus();
       }
-      await refreshStackHostStatus();
+      await refreshStarterStatus();
       return;
     }
 
-    await refreshStackHostStatus();
-    await loadContainers();
+    await refreshStarterStatus();
     if (selContainer && preset.containerName) {
       const c = preset.containerName;
       const hasOption = Array.from(selContainer.options).some((o) => o.value === c);
@@ -911,25 +1024,10 @@ export function initStarter(): void {
     updateRunButtonState();
   });
   selStackPreset?.addEventListener("change", () => {
-    void refreshStackHostStatus();
-    void loadContainers();
+    void refreshStarterStatus();
   });
-  btnLaunchStackRefresh?.addEventListener("click", () => void refreshStackHostStatus());
-  btnLaunchStackStop?.addEventListener("click", () => void stopStackHost());
   btnStopStackPrimary?.addEventListener("click", () => void stopStackHost());
-  btnRefreshStatus?.addEventListener("click", () =>
-    void (async () => {
-      if (btnRefreshStatus) btnRefreshStatus.disabled = true;
-      try {
-        await refreshStackHostStatus();
-        await refreshLaunchStatus();
-      } finally {
-        if (btnRefreshStatus) btnRefreshStatus.disabled = false;
-      }
-    })(),
-  );
-  btnRefresh?.addEventListener("click", () => void loadContainers());
-  btnCheck?.addEventListener("click", () => void refreshLaunchStatus());
+  btnRefreshStatus?.addEventListener("click", () => void refreshStarterStatus());
   btnStopServer?.addEventListener("click", () => void stopLaunchServer());
   btnRun?.addEventListener("click", () => void runLaunchScript());
   chkLaunchCluster?.addEventListener("change", () => {
@@ -950,9 +1048,8 @@ export function initStarter(): void {
       await applyClusterDefaultsFromEnvFile();
       applyStoredStackLaunchModeToClusterUI();
       await loadStackPresets();
-      await refreshStackHostStatus();
       await loadScripts();
-      await loadContainers();
+      await refreshStarterStatus();
     })();
   });
   window.addEventListener(STACK_LAUNCH_MODE_EVENT, () => {
@@ -962,9 +1059,8 @@ export function initStarter(): void {
     await applyClusterDefaultsFromEnvFile();
     applyStoredStackLaunchModeToClusterUI();
     await loadStackPresets();
-    await refreshStackHostStatus();
     await loadScripts();
-    await loadContainers();
+    await refreshStarterStatus();
   })();
 }
 

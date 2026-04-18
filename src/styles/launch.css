@@ -124,6 +124,23 @@
   border-radius: 8px;
 }
 
+.launch-status-heading {
+  margin: 0 0 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.launch-status-box .launch-status-heading + .status {
+  margin-top: 0;
+}
+
+.launch-status-box .launch-status-heading:not(:first-child) {
+  margin-top: 0.75rem;
+}
+
 .launch-status-box .status {
   margin: 0;
 }
