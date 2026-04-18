@@ -117,6 +117,7 @@ export function buildSglangDockerRunArgv(
   mainCommand: string[] = ["sleep", "infinity"],
 ): string[] {
   const repoRoot = findRepoRoot();
+  const localDir = path.join(os.homedir(), "minimax_model");
   const hfCache = path.join(os.homedir(), ".cache", "huggingface");
   const shm = shmSize();
   const hostPublish = sglangStackHostPort();
@@ -146,6 +147,8 @@ export function buildSglangDockerRunArgv(
     "-v",
     `${hfCache}:/root/.cache/huggingface`,
     "-v",
+    `${localDir}:/minimax_model`,
+     "-v",
     `${repoRoot}:/workspace`,
     "--ipc=host",
     "--rm",
