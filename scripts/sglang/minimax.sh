@@ -15,6 +15,7 @@ TOOL_CALL_PARSER="minimax-m2"
 python3 -m sglang.launch_server \
     --model-path ${MODEL} \
     --served-model-name ${SERVED_MODEL_NAME} \
+    --model-loader-extra-config '{"enable_multithread_load": true, "num_threads": 8}' \
     --tp-size ${TENSOR_PARALLEL} \
     --host ${HOST} \
     --port ${PORT} \
@@ -22,4 +23,6 @@ python3 -m sglang.launch_server \
     --attention-backend ${ATTENTION_BACKEND} \
     --tool-call-parser ${TOOL_CALL_PARSER} \
     --reasoning-parser minimax-append-think \
-    --mem-fraction-static 0.94
+    --mem-fraction-static 0.94 \
+    --max-total-tokens 4096 \
+    --max-running-requests 1 
