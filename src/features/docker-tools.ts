@@ -384,8 +384,20 @@ async function runTool(): Promise<void> {
 
     setDockerStatus(`Starting HF transfer (${role}) in ${container}…`);
     btnRun.disabled = true;
+    outEl.textContent = "";
+    if (outMetaEl) {
+      outMetaEl.textContent = "—";
+      outMetaEl.classList.add("hidden");
+    }
+
+    const t0 = Date.now();
+    const tick = window.setInterval(() => {
+      const s = Math.floor((Date.now() - t0) / 1000);
+      setDockerStatus(`HF transfer (${role}) in ${container}… ${s}s (live output below)`);
+    }, 1000);
+
     try {
-      const res = await fetch("/api/model-transfer/exec", {
+      const res = await fetch("/api/model-transfer/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -400,51 +412,123 @@ async function runTool(): Promise<void> {
           timeoutMs,
         }),
       });
-      const body = (await res.json()) as {
-        ok?: boolean;
-        error?: string;
-        exitCode?: number | null;
-        stdout?: string;
-        stderr?: string;
-        timedOut?: boolean;
-        truncated?: boolean;
-        durationMs?: number;
-        role?: string;
-        modelDir?: string;
-        masterAddr?: string;
-        masterPort?: number;
-      };
-      const outParts: string[] = [];
-      if (typeof body.stdout === "string" && body.stdout) outParts.push(normalizeProbeText(body.stdout));
-      if (typeof body.stderr === "string" && body.stderr) {
-        outParts.push("--- stderr ---");
-        outParts.push(normalizeProbeText(body.stderr));
+
+      if (!res.ok) {
+        const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+        setDockerStatus(errBody.error ?? `Run failed (${res.status})`, true);
+        return;
       }
-      outEl.textContent = outParts.join("\n").trim() || "(No output.)";
-      if (outMetaEl) {
+
+      const reader = res.body?.getReader();
+      if (!reader) {
+        setDockerStatus("No response body from server.", true);
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let outAcc = "";
+      let endEvent: {
+        exitCode: number | null;
+        timedOut: boolean;
+        truncated: boolean;
+        durationMs: number;
+      } | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let ev: {
+            kind?: string;
+            stream?: string;
+            text?: string;
+            exitCode?: number | null;
+            timedOut?: boolean;
+            truncated?: boolean;
+            durationMs?: number;
+            message?: string;
+          };
+          try {
+            ev = JSON.parse(line) as typeof ev;
+          } catch {
+            continue;
+          }
+          if (ev.kind === "chunk" && typeof ev.text === "string") {
+            outAcc += ev.text;
+            outEl.textContent = normalizeProbeText(outAcc).trimEnd() || "…";
+          } else if (ev.kind === "end") {
+            endEvent = {
+              exitCode: ev.exitCode ?? null,
+              timedOut: ev.timedOut === true,
+              truncated: ev.truncated === true,
+              durationMs: typeof ev.durationMs === "number" ? ev.durationMs : 0,
+            };
+          } else if (ev.kind === "error" && typeof ev.message === "string") {
+            setDockerStatus(ev.message, true);
+            return;
+          }
+        }
+      }
+
+      if (buffer.trim()) {
+        try {
+          const ev = JSON.parse(buffer) as {
+            kind?: string;
+            text?: string;
+            exitCode?: number | null;
+            timedOut?: boolean;
+            truncated?: boolean;
+            durationMs?: number;
+          };
+          if (ev.kind === "chunk" && typeof ev.text === "string") {
+            outAcc += ev.text;
+            outEl.textContent = normalizeProbeText(outAcc).trimEnd() || "(No output.)";
+          } else if (ev.kind === "end") {
+            endEvent = {
+              exitCode: ev.exitCode ?? null,
+              timedOut: ev.timedOut === true,
+              truncated: ev.truncated === true,
+              durationMs: typeof ev.durationMs === "number" ? ev.durationMs : 0,
+            };
+          }
+        } catch {
+          /* ignore trailing garbage */
+        }
+      }
+
+      outEl.textContent = normalizeProbeText(outAcc).trim() || "(No output.)";
+      if (outMetaEl && endEvent) {
         const metaLines = [
           `container: ${container}`,
-          `role: ${body.role ?? role}`,
-          `modelDir: ${body.modelDir ?? modelDir}`,
-          `master: ${body.masterAddr ?? masterAddr}:${String(body.masterPort ?? masterPort)}`,
-          `exitCode: ${String(body.exitCode ?? "null")}`,
-          `durationMs: ${String(body.durationMs ?? "n/a")}`,
-          `timedOut: ${body.timedOut === true ? "yes" : "no"}`,
-          `truncated: ${body.truncated === true ? "yes" : "no"}`,
+          `role: ${role}`,
+          `modelDir: ${modelDir}`,
+          `master: ${masterAddr}:${String(masterPort)}`,
+          `exitCode: ${String(endEvent.exitCode ?? "null")}`,
+          `durationMs: ${String(endEvent.durationMs ?? "n/a")}`,
+          `timedOut: ${endEvent.timedOut ? "yes" : "no"}`,
+          `truncated: ${endEvent.truncated ? "yes" : "no"}`,
         ];
         outMetaEl.textContent = metaLines.join("\n");
         outMetaEl.classList.remove("hidden");
       }
-      if (!res.ok) {
-        setDockerStatus(
-          body.error ?? (body.timedOut ? "Transfer timed out." : `Run failed (${res.status})`),
-          true,
-        );
+
+      const ok = endEvent !== null && endEvent.exitCode === 0 && !endEvent.timedOut;
+      if (!endEvent) {
+        setDockerStatus("Transfer ended without status from server.", true);
         return;
       }
       setDockerStatus(
-        body.timedOut ? "Transfer timed out (increase timeout if the model is large)." : "Transfer finished.",
-        body.timedOut === true,
+        endEvent.timedOut
+          ? "Transfer timed out (increase timeout if the model is large)."
+          : ok
+            ? "Transfer finished."
+            : "Transfer finished with errors (see output).",
+        endEvent.timedOut || !ok,
       );
     } catch (e) {
       outEl.textContent = "";
@@ -454,6 +538,7 @@ async function runTool(): Promise<void> {
       }
       setDockerStatus(e instanceof Error ? e.message : String(e), true);
     } finally {
+      window.clearInterval(tick);
       btnRun.disabled = false;
     }
     return;
@@ -474,8 +559,20 @@ async function runTool(): Promise<void> {
 
     setDockerStatus(`Downloading ${modelId} in ${container}…`);
     btnRun.disabled = true;
+    outEl.textContent = "";
+    if (outMetaEl) {
+      outMetaEl.textContent = "—";
+      outMetaEl.classList.add("hidden");
+    }
+
+    const t0 = Date.now();
+    const tick = window.setInterval(() => {
+      const s = Math.floor((Date.now() - t0) / 1000);
+      setDockerStatus(`Downloading ${modelId} in ${container}… ${s}s (live output below)`);
+    }, 1000);
+
     try {
-      const res = await fetch("/api/model-download/exec", {
+      const res = await fetch("/api/model-download/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -485,48 +582,122 @@ async function runTool(): Promise<void> {
           timeoutMs,
         }),
       });
-      const body = (await res.json()) as {
-        ok?: boolean;
-        error?: string;
-        exitCode?: number | null;
-        stdout?: string;
-        stderr?: string;
-        timedOut?: boolean;
-        truncated?: boolean;
-        durationMs?: number;
-        modelId?: string;
-        saveDir?: string;
-      };
-      const outParts: string[] = [];
-      if (typeof body.stdout === "string" && body.stdout) outParts.push(normalizeProbeText(body.stdout));
-      if (typeof body.stderr === "string" && body.stderr) {
-        outParts.push("--- stderr ---");
-        outParts.push(normalizeProbeText(body.stderr));
+
+      if (!res.ok) {
+        const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+        setDockerStatus(errBody.error ?? `Run failed (${res.status})`, true);
+        return;
       }
-      outEl.textContent = outParts.join("\n").trim() || "(No output.)";
-      if (outMetaEl) {
+
+      const reader = res.body?.getReader();
+      if (!reader) {
+        setDockerStatus("No response body from server.", true);
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let outAcc = "";
+      let endEvent: {
+        exitCode: number | null;
+        timedOut: boolean;
+        truncated: boolean;
+        durationMs: number;
+      } | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let ev: {
+            kind?: string;
+            stream?: string;
+            text?: string;
+            exitCode?: number | null;
+            timedOut?: boolean;
+            truncated?: boolean;
+            durationMs?: number;
+            message?: string;
+          };
+          try {
+            ev = JSON.parse(line) as typeof ev;
+          } catch {
+            continue;
+          }
+          if (ev.kind === "chunk" && typeof ev.text === "string") {
+            outAcc += ev.text;
+            outEl.textContent = normalizeProbeText(outAcc).trimEnd() || "…";
+          } else if (ev.kind === "end") {
+            endEvent = {
+              exitCode: ev.exitCode ?? null,
+              timedOut: ev.timedOut === true,
+              truncated: ev.truncated === true,
+              durationMs: typeof ev.durationMs === "number" ? ev.durationMs : 0,
+            };
+          } else if (ev.kind === "error" && typeof ev.message === "string") {
+            setDockerStatus(ev.message, true);
+            return;
+          }
+        }
+      }
+
+      if (buffer.trim()) {
+        try {
+          const ev = JSON.parse(buffer) as {
+            kind?: string;
+            text?: string;
+            exitCode?: number | null;
+            timedOut?: boolean;
+            truncated?: boolean;
+            durationMs?: number;
+          };
+          if (ev.kind === "chunk" && typeof ev.text === "string") {
+            outAcc += ev.text;
+            outEl.textContent = normalizeProbeText(outAcc).trimEnd() || "(No output.)";
+          } else if (ev.kind === "end") {
+            endEvent = {
+              exitCode: ev.exitCode ?? null,
+              timedOut: ev.timedOut === true,
+              truncated: ev.truncated === true,
+              durationMs: typeof ev.durationMs === "number" ? ev.durationMs : 0,
+            };
+          }
+        } catch {
+          /* ignore trailing garbage */
+        }
+      }
+
+      outEl.textContent = normalizeProbeText(outAcc).trim() || "(No output.)";
+      if (outMetaEl && endEvent) {
         const metaLines = [
           `container: ${container}`,
-          `modelId: ${body.modelId ?? modelId}`,
-          `saveDir: ${body.saveDir ?? saveDir}`,
-          `exitCode: ${String(body.exitCode ?? "null")}`,
-          `durationMs: ${String(body.durationMs ?? "n/a")}`,
-          `timedOut: ${body.timedOut === true ? "yes" : "no"}`,
-          `truncated: ${body.truncated === true ? "yes" : "no"}`,
+          `modelId: ${modelId}`,
+          `saveDir: ${saveDir}`,
+          `exitCode: ${String(endEvent.exitCode ?? "null")}`,
+          `durationMs: ${String(endEvent.durationMs ?? "n/a")}`,
+          `timedOut: ${endEvent.timedOut ? "yes" : "no"}`,
+          `truncated: ${endEvent.truncated ? "yes" : "no"}`,
         ];
         outMetaEl.textContent = metaLines.join("\n");
         outMetaEl.classList.remove("hidden");
       }
-      if (!res.ok) {
-        setDockerStatus(
-          body.error ?? (body.timedOut ? "Download timed out." : `Run failed (${res.status})`),
-          true,
-        );
+
+      const ok = endEvent !== null && endEvent.exitCode === 0 && !endEvent.timedOut;
+      if (!endEvent) {
+        setDockerStatus("Download ended without status from server.", true);
         return;
       }
       setDockerStatus(
-        body.timedOut ? "Download timed out (increase timeout for large models)." : "Download finished.",
-        body.timedOut === true,
+        endEvent.timedOut
+          ? "Download timed out (increase timeout for large models)."
+          : ok
+            ? "Download finished."
+            : "Download finished with errors (see output).",
+        endEvent.timedOut || !ok,
       );
     } catch (e) {
       outEl.textContent = "";
@@ -536,6 +707,7 @@ async function runTool(): Promise<void> {
       }
       setDockerStatus(e instanceof Error ? e.message : String(e), true);
     } finally {
+      window.clearInterval(tick);
       btnRun.disabled = false;
     }
     return;
@@ -711,12 +883,12 @@ export function initDockerTools(): void {
     } else if (mode === "transfer") {
       prefillTransferModelDirFromPrefs();
       setDockerStatus(
-        "Model transfer (NCCL): start master (rank 0) first, then worker (rank 1). Uses python3 /workspace/model_transfer/model_transfer.py.",
+        "Model transfer (NCCL): start master first, then worker. Log output streams live while model_transfer.py runs.",
       );
     } else if (mode === "download") {
       prefillDownloadModelIdFromPrefs();
       setDockerStatus(
-        "Hugging Face download via transformers (config, tokenizer, weights). Uses python3 /workspace/model_download/download.py.",
+        "Hugging Face download (snapshot_download + live log). Progress lines and disk heartbeats stream below while the job runs.",
       );
     } else {
       setDockerStatus("Structured tools enabled.");

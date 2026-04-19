@@ -76,6 +76,50 @@ export type ModelTransferParams = {
   allFiles: boolean;
 };
 
+function modelTransferDockerArgs(container: string, params: ModelTransferParams): string[] {
+  const rank = params.role === "master" ? 0 : 1;
+  let srcDir = params.modelDir;
+  let destDir = params.modelDir;
+  if (params.role === "worker") {
+    const errWs = validateContainerFsPath(params.workerSrcDir);
+    if (errWs) throw new Error(errWs);
+    srcDir = params.workerSrcDir;
+    destDir = params.modelDir;
+  }
+
+  const ws = Math.max(2, Math.min(64, Math.trunc(params.worldSize)));
+  const port = Math.max(1, Math.min(65535, Math.trunc(params.masterPort)));
+
+  const args: string[] = [
+    "exec",
+    "-i",
+    "-e",
+    "MODEL_TRANSFER_TORCH_BACKEND=nccl",
+    container,
+    "python3",
+    "-u",
+    MODEL_TRANSFER_SCRIPT,
+    "--mode",
+    "rdma",
+    "--rank",
+    String(rank),
+    "--world-size",
+    String(ws),
+    "--master-addr",
+    params.masterAddr.trim(),
+    "--master-port",
+    String(port),
+    "--src",
+    srcDir,
+    "--dest",
+    destDir,
+  ];
+  if (params.role === "master" && params.allFiles) {
+    args.push("--all-files");
+  }
+  return args;
+}
+
 export type DiagnosticsExecResult = DockerResult & {
   timedOut: boolean;
   truncated: boolean;
@@ -636,18 +680,10 @@ export async function runModelTransferInContainer(
   const errMaster = validateTransferMasterAddr(params.masterAddr);
   if (errMaster) throw new Error(errMaster);
 
-  const rank = params.role === "master" ? 0 : 1;
-  let srcDir = params.modelDir;
-  let destDir = params.modelDir;
   if (params.role === "worker") {
     const errWs = validateContainerFsPath(params.workerSrcDir);
     if (errWs) throw new Error(errWs);
-    srcDir = params.workerSrcDir;
-    destDir = params.modelDir;
   }
-
-  const ws = Math.max(2, Math.min(64, Math.trunc(params.worldSize)));
-  const port = Math.max(1, Math.min(65535, Math.trunc(params.masterPort)));
 
   const timeoutMs = Math.max(
     MODEL_TRANSFER_TIMEOUT_MIN_MS,
@@ -661,36 +697,14 @@ export async function runModelTransferInContainer(
     Math.min(10_000_000, Math.trunc(options.maxOutputBytes ?? 2_000_000)),
   );
 
-  const args: string[] = [
-    "exec",
-    "-i",
-    "-e",
-    "MODEL_TRANSFER_TORCH_BACKEND=nccl",
-    container,
-    "python3",
-    MODEL_TRANSFER_SCRIPT,
-    "--mode",
-    "rdma",
-    "--rank",
-    String(rank),
-    "--world-size",
-    String(ws),
-    "--master-addr",
-    params.masterAddr.trim(),
-    "--master-port",
-    String(port),
-    "--src",
-    srcDir,
-    "--dest",
-    destDir,
-  ];
-  if (params.role === "master" && params.allFiles) {
-    args.push("--all-files");
-  }
+  const args: string[] = modelTransferDockerArgs(container, params);
 
   return new Promise((resolve, reject) => {
     const started = Date.now();
-    const child = spawn("docker", args, { windowsHide: true });
+    const child = spawn("docker", args, {
+      windowsHide: true,
+      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+    });
 
     let stdout = "";
     let stderr = "";
@@ -757,10 +771,137 @@ export async function runModelTransferInContainer(
   });
 }
 
+/** NDJSON events for {@link streamModelTransferInContainer}. */
+export type ModelTransferStreamEvent =
+  | { kind: "chunk"; stream: "stdout" | "stderr"; text: string }
+  | { kind: "end"; exitCode: number | null; timedOut: boolean; truncated: boolean; durationMs: number };
+
+/**
+ * Same docker invocation as {@link runModelTransferInContainer}, but forwards stdout/stderr as they arrive.
+ */
+export async function streamModelTransferInContainer(
+  container: string,
+  params: ModelTransferParams,
+  options: ModelTransferExecOptions,
+  emit: (event: ModelTransferStreamEvent) => void,
+): Promise<void> {
+  assertSafeContainerName(container);
+
+  const errModel = validateContainerFsPath(params.modelDir);
+  if (errModel) throw new Error(errModel);
+  const errMaster = validateTransferMasterAddr(params.masterAddr);
+  if (errMaster) throw new Error(errMaster);
+
+  if (params.role === "worker") {
+    const errWs = validateContainerFsPath(params.workerSrcDir);
+    if (errWs) throw new Error(errWs);
+  }
+
+  const timeoutMs = Math.max(
+    MODEL_TRANSFER_TIMEOUT_MIN_MS,
+    Math.min(
+      MODEL_TRANSFER_TIMEOUT_MAX_MS,
+      Math.trunc(options.timeoutMs ?? 3_600_000),
+    ),
+  );
+  const maxOutputBytes = Math.max(
+    1024,
+    Math.min(10_000_000, Math.trunc(options.maxOutputBytes ?? 2_000_000)),
+  );
+
+  const args: string[] = modelTransferDockerArgs(container, params);
+
+  await new Promise<void>((resolve, reject) => {
+    const started = Date.now();
+    const child = spawn("docker", args, {
+      windowsHide: true,
+      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+    });
+
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let truncated = false;
+    let timedOut = false;
+
+    const capAppend = (chunk: string, target: "stdout" | "stderr"): void => {
+      const bytes = Buffer.byteLength(chunk, "utf8");
+      if (target === "stdout") {
+        const remaining = maxOutputBytes - stdoutBytes;
+        if (remaining <= 0) {
+          truncated = true;
+          return;
+        }
+        if (bytes <= remaining) {
+          stdoutBytes += bytes;
+          emit({ kind: "chunk", stream: "stdout", text: chunk });
+        } else {
+          const partial = Buffer.from(chunk, "utf8").subarray(0, remaining).toString("utf8");
+          stdoutBytes += remaining;
+          truncated = true;
+          emit({ kind: "chunk", stream: "stdout", text: partial });
+        }
+        return;
+      }
+      const remaining = maxOutputBytes - stderrBytes;
+      if (remaining <= 0) {
+        truncated = true;
+        return;
+      }
+      if (bytes <= remaining) {
+        stderrBytes += bytes;
+        emit({ kind: "chunk", stream: "stderr", text: chunk });
+      } else {
+        const partial = Buffer.from(chunk, "utf8").subarray(0, remaining).toString("utf8");
+        stderrBytes += remaining;
+        truncated = true;
+        emit({ kind: "chunk", stream: "stderr", text: partial });
+      }
+    };
+
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => capAppend(chunk, "stdout"));
+    child.stderr?.on("data", (chunk: string) => capAppend(chunk, "stderr"));
+    child.on("error", reject);
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      emit({
+        kind: "end",
+        exitCode: code,
+        timedOut,
+        truncated,
+        durationMs: Date.now() - started,
+      });
+      resolve();
+    });
+  });
+}
+
 export type ModelDownloadParams = {
   modelId: string;
   saveDir: string;
 };
+
+function modelDownloadDockerArgs(container: string, params: ModelDownloadParams): string[] {
+  return [
+    "exec",
+    "-i",
+    container,
+    "python3",
+    "-u",
+    MODEL_DOWNLOAD_SCRIPT,
+    "--model-id",
+    params.modelId.trim(),
+    "--save-dir",
+    params.saveDir.trim(),
+  ];
+}
 
 /**
  * Runs `model_download/download.py` via `docker exec` argv (paths passed as args, not shell).
@@ -789,21 +930,14 @@ export async function runModelDownloadInContainer(
     Math.min(10_000_000, Math.trunc(options.maxOutputBytes ?? 2_000_000)),
   );
 
-  const args: string[] = [
-    "exec",
-    "-i",
-    container,
-    "python3",
-    MODEL_DOWNLOAD_SCRIPT,
-    "--model-id",
-    params.modelId.trim(),
-    "--save-dir",
-    params.saveDir.trim(),
-  ];
+  const args: string[] = modelDownloadDockerArgs(container, params);
 
   return new Promise((resolve, reject) => {
     const started = Date.now();
-    const child = spawn("docker", args, { windowsHide: true });
+    const child = spawn("docker", args, {
+      windowsHide: true,
+      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+    });
 
     let stdout = "";
     let stderr = "";
@@ -866,6 +1000,114 @@ export async function runModelDownloadInContainer(
         truncated,
         durationMs: Date.now() - started,
       });
+    });
+  });
+}
+
+/** NDJSON events for {@link streamModelDownloadInContainer}. */
+export type ModelDownloadStreamEvent =
+  | { kind: "chunk"; stream: "stdout" | "stderr"; text: string }
+  | { kind: "end"; exitCode: number | null; timedOut: boolean; truncated: boolean; durationMs: number };
+
+/**
+ * Same docker invocation as {@link runModelDownloadInContainer}, but forwards stdout/stderr
+ * as they arrive (for live progress bars and heartbeats in the UI).
+ */
+export async function streamModelDownloadInContainer(
+  container: string,
+  params: ModelDownloadParams,
+  options: ModelTransferExecOptions,
+  emit: (event: ModelDownloadStreamEvent) => void,
+): Promise<void> {
+  assertSafeContainerName(container);
+
+  const errId = validateHuggingFaceRepoId(params.modelId);
+  if (errId) throw new Error(errId);
+  const errDir = validateContainerFsPath(params.saveDir);
+  if (errDir) throw new Error(errDir);
+
+  const timeoutMs = Math.max(
+    MODEL_TRANSFER_TIMEOUT_MIN_MS,
+    Math.min(
+      MODEL_TRANSFER_TIMEOUT_MAX_MS,
+      Math.trunc(options.timeoutMs ?? 3_600_000),
+    ),
+  );
+  const maxOutputBytes = Math.max(
+    1024,
+    Math.min(10_000_000, Math.trunc(options.maxOutputBytes ?? 2_000_000)),
+  );
+
+  const args: string[] = modelDownloadDockerArgs(container, params);
+
+  await new Promise<void>((resolve, reject) => {
+    const started = Date.now();
+    const child = spawn("docker", args, {
+      windowsHide: true,
+      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+    });
+
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let truncated = false;
+    let timedOut = false;
+
+    const capAppend = (chunk: string, target: "stdout" | "stderr"): void => {
+      const bytes = Buffer.byteLength(chunk, "utf8");
+      if (target === "stdout") {
+        const remaining = maxOutputBytes - stdoutBytes;
+        if (remaining <= 0) {
+          truncated = true;
+          return;
+        }
+        if (bytes <= remaining) {
+          stdoutBytes += bytes;
+          emit({ kind: "chunk", stream: "stdout", text: chunk });
+        } else {
+          const partial = Buffer.from(chunk, "utf8").subarray(0, remaining).toString("utf8");
+          stdoutBytes += remaining;
+          truncated = true;
+          emit({ kind: "chunk", stream: "stdout", text: partial });
+        }
+        return;
+      }
+      const remaining = maxOutputBytes - stderrBytes;
+      if (remaining <= 0) {
+        truncated = true;
+        return;
+      }
+      if (bytes <= remaining) {
+        stderrBytes += bytes;
+        emit({ kind: "chunk", stream: "stderr", text: chunk });
+      } else {
+        const partial = Buffer.from(chunk, "utf8").subarray(0, remaining).toString("utf8");
+        stderrBytes += remaining;
+        truncated = true;
+        emit({ kind: "chunk", stream: "stderr", text: partial });
+      }
+    };
+
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => capAppend(chunk, "stdout"));
+    child.stderr?.on("data", (chunk: string) => capAppend(chunk, "stderr"));
+    child.on("error", reject);
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      emit({
+        kind: "end",
+        exitCode: code,
+        timedOut,
+        truncated,
+        durationMs: Date.now() - started,
+      });
+      resolve();
     });
   });
 }

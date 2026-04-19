@@ -57,6 +57,22 @@ DEFAULT_CHUNK_SIZE = 32 * 1024 * 1024  # 32 MB chunks
 DEFAULT_NUM_STREAMS = 16  # Parallel streams for TCP fallback
 
 _ENV_PREFIX = "MODEL_TRANSFER_"
+_DISK_HEARTBEAT_SEC = 30.0
+
+
+def _disk_heartbeat_transfer(stop: threading.Event, watch_dir: str) -> None:
+    """Periodic free-space lines during long RDMA transfers (multi-GB single-file sends)."""
+    while not stop.wait(_DISK_HEARTBEAT_SEC):
+        try:
+            usage = shutil.disk_usage(watch_dir)
+            free_gib = usage.free / (1024**3)
+            total_gib = usage.total / (1024**3)
+            print(
+                f"[heartbeat] disk free {free_gib:.2f} GiB of {total_gib:.2f} GiB ({watch_dir})",
+                flush=True,
+            )
+        except OSError as e:
+            print(f"[heartbeat] disk_usage failed: {e}", flush=True, file=sys.stderr)
 
 
 def _load_dotenv() -> None:
@@ -133,7 +149,8 @@ class RDMATransfer:
         timeout_sec = _mt_env_int('INIT_TIMEOUT_SEC', 1800)
         print(
             f'PyTorch distributed: backend={self.backend}, device={self.device} '
-            f'(set MODEL_TRANSFER_TORCH_BACKEND=gloo|nccl; gloo needs no NCCL)'
+            f'(set MODEL_TRANSFER_TORCH_BACKEND=gloo|nccl; gloo needs no NCCL)',
+            flush=True,
         )
         dist.init_process_group(
             backend=self.backend,
@@ -160,7 +177,7 @@ class RDMATransfer:
             size_tensor = torch.tensor([n], dtype=torch.long, device=dev)
             dist.broadcast(size_tensor, src=0)
             dist.broadcast(tensor, src=0)
-            print(f"Sent {file_path} ({n / 1e9:.2f} GB)")
+            print(f"Sent {file_path} ({n / 1e9:.2f} GB)", flush=True)
         else:  # Receiver
             size_tensor = torch.zeros(1, dtype=torch.long, device=dev)
             dist.broadcast(size_tensor, src=0)
@@ -172,7 +189,7 @@ class RDMATransfer:
             os.makedirs(os.path.dirname(dest_path) or '.', exist_ok=True)
             with open(dest_path, 'wb') as f:
                 f.write(tensor.detach().cpu().numpy().tobytes())
-            print(f"Received {dest_path} ({size / 1e9:.2f} GB)")
+            print(f"Received {dest_path} ({size / 1e9:.2f} GB)", flush=True)
     
     def send_directory(self, src_dir: str, dest_dir: str, files: List[FileInfo]):
         """Send multiple files sequentially."""
@@ -396,42 +413,55 @@ class ModelTransfer:
             print("Error: no files under --src on rank 0 (check path and permissions).")
             return False
 
-        rdma = RDMATransfer(rank, world_size, master_addr, master_port)
+        stop_hb = threading.Event()
+        watch_dir = str(self.src_dir) if rank == 0 else str(self.dest_dir)
+        hb_thread = threading.Thread(
+            target=_disk_heartbeat_transfer,
+            args=(stop_hb, watch_dir),
+            name="disk-heartbeat",
+            daemon=True,
+        )
+        hb_thread.start()
         try:
-            if rank == 0:
-                if sender_send_all:
-                    to_transfer = list(self.files)
-                else:
-                    to_transfer = self._check_existing(self.dest_dir)
-                manifest: List[Tuple[str, int]] = [(f.path, f.size) for f in to_transfer]
-                object_list = [manifest]
-            else:
-                object_list = [None]
-
-            dist.broadcast_object_list(object_list, src=0)
-            manifest = object_list[0]
-            assert manifest is not None
-
-            if not manifest:
+            rdma = RDMATransfer(rank, world_size, master_addr, master_port)
+            try:
                 if rank == 0:
-                    print("Nothing to transfer (all files already at destination, or empty manifest).")
+                    if sender_send_all:
+                        to_transfer = list(self.files)
+                    else:
+                        to_transfer = self._check_existing(self.dest_dir)
+                    manifest: List[Tuple[str, int]] = [(f.path, f.size) for f in to_transfer]
+                    object_list = [manifest]
                 else:
-                    print("Receiver: manifest is empty; nothing to do.")
+                    object_list = [None]
+
+                dist.broadcast_object_list(object_list, src=0)
+                manifest = object_list[0]
+                assert manifest is not None
+
+                if not manifest:
+                    if rank == 0:
+                        print("Nothing to transfer (all files already at destination, or empty manifest).")
+                    else:
+                        print("Receiver: manifest is empty; nothing to do.")
+                    return True
+
+                if rank == 0:
+                    print(f"Transferring {len(manifest)} files via {rdma.backend}...", flush=True)
+                else:
+                    print(f"Receiving {len(manifest)} files into {self.dest_dir}...", flush=True)
+
+                for path, _size in manifest:
+                    src_path = self.src_dir / path
+                    dest_path = self.dest_dir / path
+                    rdma.send_file(str(src_path), str(dest_path))
+
                 return True
-
-            if rank == 0:
-                print(f"Transferring {len(manifest)} files via {rdma.backend}...")
-            else:
-                print(f"Receiving {len(manifest)} files into {self.dest_dir}...")
-
-            for path, _size in manifest:
-                src_path = self.src_dir / path
-                dest_path = self.dest_dir / path
-                rdma.send_file(str(src_path), str(dest_path))
-
-            return True
+            finally:
+                rdma.cleanup()
         finally:
-            rdma.cleanup()
+            stop_hb.set()
+            hb_thread.join(timeout=5.0)
     
     def transfer_with_resume(self, method: str = 'rdma', **kwargs):
         """Transfer with resume capability."""
