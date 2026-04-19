@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Configuration variables
-MODEL="Qwen/Qwen3.5-2B"
+MODEL="/data/hf/Qwen_Qwen3.5-2B"
 SERVED_MODEL_NAME="qwen3.5-2b"
 CONTEXT_LENGTH=32768
 MEM_FRACTION_STATIC=0.8
