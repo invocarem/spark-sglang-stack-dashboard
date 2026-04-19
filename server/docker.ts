@@ -19,6 +19,63 @@ export type DiagnosticsExecOptions = {
   maxOutputBytes?: number;
 };
 
+/** Paths passed to `model_transfer.py` inside the container (must stay shell-safe; we use argv, not `bash -lc`). */
+const MODEL_TRANSFER_SCRIPT = "/workspace/model_transfer/model_transfer.py";
+
+const MODEL_DOWNLOAD_SCRIPT = "/workspace/model_download/download.py";
+
+/** Min 1 minute, max 24 hours for NCCL/HF directory sync. */
+export const MODEL_TRANSFER_TIMEOUT_MIN_MS = 60_000;
+export const MODEL_TRANSFER_TIMEOUT_MAX_MS = 86_400_000;
+
+/**
+ * Absolute POSIX path without `..` or shell metacharacters (for transfer src/dest inside the container).
+ */
+export function validateContainerFsPath(p: string): string | null {
+  const t = p.trim();
+  if (!t) return "Path is required";
+  if (t.length > 4096) return "Path is too long";
+  if (!t.startsWith("/")) return "Path must be absolute (start with /)";
+  if (t.includes("..")) return "Path must not contain ..";
+  if (/[\n\r\0]/.test(t)) return "Path contains invalid characters";
+  if (!/^[/a-zA-Z0-9._\-+@]+$/.test(t)) return "Path contains invalid characters";
+  return null;
+}
+
+/** Master/rendezvous address (hostname or IPv4; no shell chars). */
+export function validateTransferMasterAddr(addr: string): string | null {
+  const t = addr.trim();
+  if (!t) return "Master address is required";
+  if (t.length > 253) return "Master address is too long";
+  if (/[\n\r\0\s;|&$`<>]/.test(t)) return "Master address contains invalid characters";
+  if (!/^[a-zA-Z0-9.:\[\]-]+$/.test(t)) return "Master address has invalid characters";
+  return null;
+}
+
+/** Hugging Face repo id (e.g. gpt2, bert-base-uncased, org/name). */
+export function validateHuggingFaceRepoId(id: string): string | null {
+  const t = id.trim();
+  if (!t) return "Model id is required";
+  if (t.length > 200) return "Model id is too long";
+  if (/[\n\r\0]/.test(t)) return "Model id contains invalid characters";
+  if (/[;|&$`<>]/.test(t)) return "Model id contains invalid characters";
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._\-/]+$/.test(t)) return "Model id has invalid characters";
+  return null;
+}
+
+export type ModelTransferParams = {
+  role: "master" | "worker";
+  /** Directory containing the HF model weights (both --src and --dest on master; --dest on worker). */
+  modelDir: string;
+  /** Rank 1 only: exists on worker when src differs from dest (default /tmp/.model_transfer_unused). */
+  workerSrcDir: string;
+  masterAddr: string;
+  masterPort: number;
+  worldSize: number;
+  /** Rank 0: send all files even if already present at dest. */
+  allFiles: boolean;
+};
+
 export type DiagnosticsExecResult = DockerResult & {
   timedOut: boolean;
   truncated: boolean;
@@ -493,6 +550,260 @@ export async function runDiagnosticsInContainer(
     const child = spawn("docker", ["exec", "-i", container, "bash", "-lc", command], {
       windowsHide: true,
     });
+
+    let stdout = "";
+    let stderr = "";
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let truncated = false;
+    let timedOut = false;
+
+    const capAppend = (chunk: string, target: "stdout" | "stderr"): void => {
+      const bytes = Buffer.byteLength(chunk, "utf8");
+      if (target === "stdout") {
+        const remaining = maxOutputBytes - stdoutBytes;
+        if (remaining <= 0) {
+          truncated = true;
+          return;
+        }
+        if (bytes <= remaining) {
+          stdout += chunk;
+          stdoutBytes += bytes;
+        } else {
+          stdout += Buffer.from(chunk, "utf8").subarray(0, remaining).toString("utf8");
+          stdoutBytes += remaining;
+          truncated = true;
+        }
+        return;
+      }
+      const remaining = maxOutputBytes - stderrBytes;
+      if (remaining <= 0) {
+        truncated = true;
+        return;
+      }
+      if (bytes <= remaining) {
+        stderr += chunk;
+        stderrBytes += bytes;
+      } else {
+        stderr += Buffer.from(chunk, "utf8").subarray(0, remaining).toString("utf8");
+        stderrBytes += remaining;
+        truncated = true;
+      }
+    };
+
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => capAppend(chunk, "stdout"));
+    child.stderr?.on("data", (chunk: string) => capAppend(chunk, "stderr"));
+    child.on("error", reject);
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({
+        code,
+        stdout,
+        stderr,
+        timedOut,
+        truncated,
+        durationMs: Date.now() - started,
+      });
+    });
+  });
+}
+
+export type ModelTransferExecOptions = {
+  timeoutMs?: number;
+  maxOutputBytes?: number;
+};
+
+/**
+ * Runs `model_transfer.py` with NCCL/Gloo (via MODEL_TRANSFER_TORCH_BACKEND) using `docker exec` argv — no shell string for paths.
+ */
+export async function runModelTransferInContainer(
+  container: string,
+  params: ModelTransferParams,
+  options: ModelTransferExecOptions = {},
+): Promise<DiagnosticsExecResult> {
+  assertSafeContainerName(container);
+
+  const errModel = validateContainerFsPath(params.modelDir);
+  if (errModel) throw new Error(errModel);
+  const errMaster = validateTransferMasterAddr(params.masterAddr);
+  if (errMaster) throw new Error(errMaster);
+
+  const rank = params.role === "master" ? 0 : 1;
+  let srcDir = params.modelDir;
+  let destDir = params.modelDir;
+  if (params.role === "worker") {
+    const errWs = validateContainerFsPath(params.workerSrcDir);
+    if (errWs) throw new Error(errWs);
+    srcDir = params.workerSrcDir;
+    destDir = params.modelDir;
+  }
+
+  const ws = Math.max(2, Math.min(64, Math.trunc(params.worldSize)));
+  const port = Math.max(1, Math.min(65535, Math.trunc(params.masterPort)));
+
+  const timeoutMs = Math.max(
+    MODEL_TRANSFER_TIMEOUT_MIN_MS,
+    Math.min(
+      MODEL_TRANSFER_TIMEOUT_MAX_MS,
+      Math.trunc(options.timeoutMs ?? 3_600_000),
+    ),
+  );
+  const maxOutputBytes = Math.max(
+    1024,
+    Math.min(10_000_000, Math.trunc(options.maxOutputBytes ?? 2_000_000)),
+  );
+
+  const args: string[] = [
+    "exec",
+    "-i",
+    "-e",
+    "MODEL_TRANSFER_TORCH_BACKEND=nccl",
+    container,
+    "python3",
+    MODEL_TRANSFER_SCRIPT,
+    "--mode",
+    "rdma",
+    "--rank",
+    String(rank),
+    "--world-size",
+    String(ws),
+    "--master-addr",
+    params.masterAddr.trim(),
+    "--master-port",
+    String(port),
+    "--src",
+    srcDir,
+    "--dest",
+    destDir,
+  ];
+  if (params.role === "master" && params.allFiles) {
+    args.push("--all-files");
+  }
+
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const child = spawn("docker", args, { windowsHide: true });
+
+    let stdout = "";
+    let stderr = "";
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let truncated = false;
+    let timedOut = false;
+
+    const capAppend = (chunk: string, target: "stdout" | "stderr"): void => {
+      const bytes = Buffer.byteLength(chunk, "utf8");
+      if (target === "stdout") {
+        const remaining = maxOutputBytes - stdoutBytes;
+        if (remaining <= 0) {
+          truncated = true;
+          return;
+        }
+        if (bytes <= remaining) {
+          stdout += chunk;
+          stdoutBytes += bytes;
+        } else {
+          stdout += Buffer.from(chunk, "utf8").subarray(0, remaining).toString("utf8");
+          stdoutBytes += remaining;
+          truncated = true;
+        }
+        return;
+      }
+      const remaining = maxOutputBytes - stderrBytes;
+      if (remaining <= 0) {
+        truncated = true;
+        return;
+      }
+      if (bytes <= remaining) {
+        stderr += chunk;
+        stderrBytes += bytes;
+      } else {
+        stderr += Buffer.from(chunk, "utf8").subarray(0, remaining).toString("utf8");
+        stderrBytes += remaining;
+        truncated = true;
+      }
+    };
+
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => capAppend(chunk, "stdout"));
+    child.stderr?.on("data", (chunk: string) => capAppend(chunk, "stderr"));
+    child.on("error", reject);
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({
+        code,
+        stdout,
+        stderr,
+        timedOut,
+        truncated,
+        durationMs: Date.now() - started,
+      });
+    });
+  });
+}
+
+export type ModelDownloadParams = {
+  modelId: string;
+  saveDir: string;
+};
+
+/**
+ * Runs `model_download/download.py` via `docker exec` argv (paths passed as args, not shell).
+ */
+export async function runModelDownloadInContainer(
+  container: string,
+  params: ModelDownloadParams,
+  options: ModelTransferExecOptions = {},
+): Promise<DiagnosticsExecResult> {
+  assertSafeContainerName(container);
+
+  const errId = validateHuggingFaceRepoId(params.modelId);
+  if (errId) throw new Error(errId);
+  const errDir = validateContainerFsPath(params.saveDir);
+  if (errDir) throw new Error(errDir);
+
+  const timeoutMs = Math.max(
+    MODEL_TRANSFER_TIMEOUT_MIN_MS,
+    Math.min(
+      MODEL_TRANSFER_TIMEOUT_MAX_MS,
+      Math.trunc(options.timeoutMs ?? 3_600_000),
+    ),
+  );
+  const maxOutputBytes = Math.max(
+    1024,
+    Math.min(10_000_000, Math.trunc(options.maxOutputBytes ?? 2_000_000)),
+  );
+
+  const args: string[] = [
+    "exec",
+    "-i",
+    container,
+    "python3",
+    MODEL_DOWNLOAD_SCRIPT,
+    "--model-id",
+    params.modelId.trim(),
+    "--save-dir",
+    params.saveDir.trim(),
+  ];
+
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const child = spawn("docker", args, { windowsHide: true });
 
     let stdout = "";
     let stderr = "";

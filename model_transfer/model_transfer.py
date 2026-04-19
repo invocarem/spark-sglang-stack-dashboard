@@ -148,15 +148,19 @@ class RDMATransfer:
         if self.rank == 0:  # Sender
             with open(file_path, 'rb') as f:
                 data = f.read()
+            n = len(data)
             # Avoid list(data): one Python int per byte makes multi-GB sends impractically slow.
-            tensor_cpu = torch.as_tensor(
+            # torch.tensor copies from the buffer (writable tensor); torch.as_tensor(np.frombuffer)
+            # would alias read-only memory and trigger PyTorch warnings / undefined behavior.
+            tensor_cpu = torch.tensor(
                 np.frombuffer(data, dtype=np.uint8), dtype=torch.uint8
             )
+            del data
             tensor = tensor_cpu.to(dev, non_blocking=(dev.type == 'cuda'))
-            size_tensor = torch.tensor([len(data)], dtype=torch.long, device=dev)
+            size_tensor = torch.tensor([n], dtype=torch.long, device=dev)
             dist.broadcast(size_tensor, src=0)
             dist.broadcast(tensor, src=0)
-            print(f"Sent {file_path} ({len(data) / 1e9:.2f} GB)")
+            print(f"Sent {file_path} ({n / 1e9:.2f} GB)")
         else:  # Receiver
             size_tensor = torch.zeros(1, dtype=torch.long, device=dev)
             dist.broadcast(size_tensor, src=0)

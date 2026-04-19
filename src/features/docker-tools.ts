@@ -5,6 +5,7 @@
 
 import { pickPreferredContainer } from "./container-preferences";
 import { getMonitorProvider, onMonitorProviderChange, withProviderQuery } from "../app/provider";
+import { getPreferredModel, onPreferredModelChange } from "../sglang/model-prefs";
 
 type ContainerRow = {
   ID: string;
@@ -97,6 +98,21 @@ const fieldDiagTimeout = document.querySelector<HTMLLabelElement>("#field-diag-t
 const fieldPipeProbe = document.querySelector<HTMLDivElement>("#field-pipe-probe");
 const inputPipeLeft = document.querySelector<HTMLInputElement>("#input-pipe-left");
 const inputPipeRight = document.querySelector<HTMLInputElement>("#input-pipe-right");
+const fieldTransfer = document.querySelector<HTMLDivElement>("#field-transfer");
+const fieldTransferExtra = document.querySelector<HTMLDivElement>("#field-transfer-extra");
+const selTransferRole = document.querySelector<HTMLSelectElement>("#sel-transfer-role");
+const inputTransferModelDir = document.querySelector<HTMLInputElement>("#input-transfer-model-dir");
+const inputTransferMasterAddr = document.querySelector<HTMLInputElement>("#input-transfer-master-addr");
+const inputTransferMasterPort = document.querySelector<HTMLInputElement>("#input-transfer-master-port");
+const selTransferTimeout = document.querySelector<HTMLSelectElement>("#sel-transfer-timeout");
+const fieldTransferWorkerSrc = document.querySelector<HTMLLabelElement>("#field-transfer-worker-src");
+const inputTransferWorkerSrc = document.querySelector<HTMLInputElement>("#input-transfer-worker-src");
+const fieldTransferAllFiles = document.querySelector<HTMLLabelElement>("#field-transfer-all-files");
+const chkTransferAllFiles = document.querySelector<HTMLInputElement>("#chk-transfer-all-files");
+const fieldDownload = document.querySelector<HTMLDivElement>("#field-download");
+const inputDownloadModelId = document.querySelector<HTMLInputElement>("#input-download-model-id");
+const inputDownloadSaveDir = document.querySelector<HTMLInputElement>("#input-download-save-dir");
+const selDownloadTimeout = document.querySelector<HTMLSelectElement>("#sel-download-timeout");
 const btnRun = document.querySelector<HTMLButtonElement>("#btn-run");
 const containerField = document.querySelector<HTMLDivElement>("#docker-container-field");
 const statusDocker = document.querySelector<HTMLParagraphElement>("#status-docker");
@@ -118,27 +134,87 @@ function prettyJson(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
-function isDiagnosticsMode(): boolean {
-  return selMode?.value === "diagnostics";
+type ToolsMode = "tools" | "diagnostics" | "transfer" | "download";
+
+function getToolsMode(): ToolsMode {
+  const v = selMode?.value;
+  if (v === "diagnostics") return "diagnostics";
+  if (v === "transfer") return "transfer";
+  if (v === "download") return "download";
+  return "tools";
 }
 
-function setDiagnosticsUIVisibility(enabled: boolean): void {
-  fieldToolSelect?.classList.toggle("hidden", enabled);
-  fieldDiagPreset?.classList.toggle("hidden", !enabled);
-  fieldDiagCommand?.classList.toggle("hidden", !enabled);
-  fieldDiagTimeout?.classList.toggle("hidden", !enabled);
-  if (!enabled) {
+function isDiagnosticsMode(): boolean {
+  return getToolsMode() === "diagnostics";
+}
+
+function isTransferMode(): boolean {
+  return getToolsMode() === "transfer";
+}
+
+function isDownloadMode(): boolean {
+  return getToolsMode() === "download";
+}
+
+function syncTransferRoleSubfields(): void {
+  const worker = selTransferRole?.value === "worker";
+  fieldTransferWorkerSrc?.classList.toggle("hidden", !worker);
+  fieldTransferAllFiles?.classList.toggle("hidden", worker);
+}
+
+function setToolsModeUI(mode: ToolsMode): void {
+  const diagnostics = mode === "diagnostics";
+  const transfer = mode === "transfer";
+  const download = mode === "download";
+  const tools = mode === "tools";
+
+  fieldToolSelect?.classList.toggle("hidden", diagnostics || transfer || download);
+  fieldDiagPreset?.classList.toggle("hidden", !diagnostics);
+  fieldDiagCommand?.classList.toggle("hidden", !diagnostics);
+  fieldDiagTimeout?.classList.toggle("hidden", !diagnostics);
+  fieldTransfer?.classList.toggle("hidden", !transfer);
+  fieldTransferExtra?.classList.toggle("hidden", !transfer);
+  fieldDownload?.classList.toggle("hidden", !download);
+
+  if (tools) {
     syncPipeProbeVisibility();
   } else {
     fieldPipeProbe?.classList.add("hidden");
   }
+  if (transfer) {
+    syncTransferRoleSubfields();
+  }
+
   if (!btnRun) return;
-  btnRun.textContent = enabled ? "Run diagnostics" : "Run";
+  if (transfer) btnRun.textContent = "Start transfer";
+  else if (download) btnRun.textContent = "Download model";
+  else if (diagnostics) btnRun.textContent = "Run diagnostics";
+  else btnRun.textContent = "Run";
 }
 
 function syncPipeProbeVisibility(): void {
-  const show = !isDiagnosticsMode() && selTool?.value === PIPE_PROBE_TOOL_ID;
+  const show =
+    getToolsMode() === "tools" && selTool?.value === PIPE_PROBE_TOOL_ID;
   fieldPipeProbe?.classList.toggle("hidden", !show);
+}
+
+function prefillTransferModelDirFromPrefs(): void {
+  const m = getPreferredModel().trim();
+  if (m.startsWith("/") && inputTransferModelDir && !inputTransferModelDir.value.trim()) {
+    inputTransferModelDir.value = m;
+  }
+}
+
+function prefillDownloadModelIdFromPrefs(): void {
+  const m = getPreferredModel().trim();
+  if (
+    m.includes("/") &&
+    !m.startsWith("/") &&
+    inputDownloadModelId &&
+    !inputDownloadModelId.value.trim()
+  ) {
+    inputDownloadModelId.value = m;
+  }
 }
 
 function formatProbeResponse(body: Record<string, unknown>): string {
@@ -281,6 +357,190 @@ async function runTool(): Promise<void> {
     setDockerStatus("Pick a container first.", true);
     return;
   }
+  if (isTransferMode()) {
+    const modelDir = inputTransferModelDir?.value.trim() ?? "";
+    const masterAddr = inputTransferMasterAddr?.value.trim() ?? "";
+    const masterPortRaw = Number(inputTransferMasterPort?.value ?? 29500);
+    const role = selTransferRole?.value === "worker" ? "worker" : "master";
+    const timeoutMsRaw = Number(selTransferTimeout?.value ?? 3_600_000);
+    const workerSrc = inputTransferWorkerSrc?.value.trim() || "/tmp/.model_transfer_unused";
+    const allFiles = chkTransferAllFiles?.checked === true;
+
+    if (!modelDir) {
+      setDockerStatus("Enter the model directory (HF weights folder inside the container).", true);
+      return;
+    }
+    if (!masterAddr) {
+      setDockerStatus("Enter the master address (IP or hostname the worker uses to reach the sender).", true);
+      return;
+    }
+
+    const timeoutMs =
+      Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0 ? Math.trunc(timeoutMsRaw) : 3_600_000;
+    const masterPort =
+      Number.isFinite(masterPortRaw) && masterPortRaw >= 1 && masterPortRaw <= 65535
+        ? Math.trunc(masterPortRaw)
+        : 29500;
+
+    setDockerStatus(`Starting HF transfer (${role}) in ${container}…`);
+    btnRun.disabled = true;
+    try {
+      const res = await fetch("/api/model-transfer/exec", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          container,
+          role,
+          modelDir,
+          masterAddr,
+          masterPort,
+          worldSize: 2,
+          workerSrcDir: workerSrc,
+          allFiles,
+          timeoutMs,
+        }),
+      });
+      const body = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        exitCode?: number | null;
+        stdout?: string;
+        stderr?: string;
+        timedOut?: boolean;
+        truncated?: boolean;
+        durationMs?: number;
+        role?: string;
+        modelDir?: string;
+        masterAddr?: string;
+        masterPort?: number;
+      };
+      const outParts: string[] = [];
+      if (typeof body.stdout === "string" && body.stdout) outParts.push(normalizeProbeText(body.stdout));
+      if (typeof body.stderr === "string" && body.stderr) {
+        outParts.push("--- stderr ---");
+        outParts.push(normalizeProbeText(body.stderr));
+      }
+      outEl.textContent = outParts.join("\n").trim() || "(No output.)";
+      if (outMetaEl) {
+        const metaLines = [
+          `container: ${container}`,
+          `role: ${body.role ?? role}`,
+          `modelDir: ${body.modelDir ?? modelDir}`,
+          `master: ${body.masterAddr ?? masterAddr}:${String(body.masterPort ?? masterPort)}`,
+          `exitCode: ${String(body.exitCode ?? "null")}`,
+          `durationMs: ${String(body.durationMs ?? "n/a")}`,
+          `timedOut: ${body.timedOut === true ? "yes" : "no"}`,
+          `truncated: ${body.truncated === true ? "yes" : "no"}`,
+        ];
+        outMetaEl.textContent = metaLines.join("\n");
+        outMetaEl.classList.remove("hidden");
+      }
+      if (!res.ok) {
+        setDockerStatus(
+          body.error ?? (body.timedOut ? "Transfer timed out." : `Run failed (${res.status})`),
+          true,
+        );
+        return;
+      }
+      setDockerStatus(
+        body.timedOut ? "Transfer timed out (increase timeout if the model is large)." : "Transfer finished.",
+        body.timedOut === true,
+      );
+    } catch (e) {
+      outEl.textContent = "";
+      if (outMetaEl) {
+        outMetaEl.textContent = "—";
+        outMetaEl.classList.add("hidden");
+      }
+      setDockerStatus(e instanceof Error ? e.message : String(e), true);
+    } finally {
+      btnRun.disabled = false;
+    }
+    return;
+  }
+
+  if (isDownloadMode()) {
+    const modelId = inputDownloadModelId?.value.trim() ?? "";
+    const saveDir = inputDownloadSaveDir?.value.trim() || "/data/hf";
+    const timeoutMsRaw = Number(selDownloadTimeout?.value ?? 3_600_000);
+
+    if (!modelId) {
+      setDockerStatus("Enter the Hugging Face model id (e.g. org/name).", true);
+      return;
+    }
+
+    const timeoutMs =
+      Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0 ? Math.trunc(timeoutMsRaw) : 3_600_000;
+
+    setDockerStatus(`Downloading ${modelId} in ${container}…`);
+    btnRun.disabled = true;
+    try {
+      const res = await fetch("/api/model-download/exec", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          container,
+          modelId,
+          saveDir,
+          timeoutMs,
+        }),
+      });
+      const body = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        exitCode?: number | null;
+        stdout?: string;
+        stderr?: string;
+        timedOut?: boolean;
+        truncated?: boolean;
+        durationMs?: number;
+        modelId?: string;
+        saveDir?: string;
+      };
+      const outParts: string[] = [];
+      if (typeof body.stdout === "string" && body.stdout) outParts.push(normalizeProbeText(body.stdout));
+      if (typeof body.stderr === "string" && body.stderr) {
+        outParts.push("--- stderr ---");
+        outParts.push(normalizeProbeText(body.stderr));
+      }
+      outEl.textContent = outParts.join("\n").trim() || "(No output.)";
+      if (outMetaEl) {
+        const metaLines = [
+          `container: ${container}`,
+          `modelId: ${body.modelId ?? modelId}`,
+          `saveDir: ${body.saveDir ?? saveDir}`,
+          `exitCode: ${String(body.exitCode ?? "null")}`,
+          `durationMs: ${String(body.durationMs ?? "n/a")}`,
+          `timedOut: ${body.timedOut === true ? "yes" : "no"}`,
+          `truncated: ${body.truncated === true ? "yes" : "no"}`,
+        ];
+        outMetaEl.textContent = metaLines.join("\n");
+        outMetaEl.classList.remove("hidden");
+      }
+      if (!res.ok) {
+        setDockerStatus(
+          body.error ?? (body.timedOut ? "Download timed out." : `Run failed (${res.status})`),
+          true,
+        );
+        return;
+      }
+      setDockerStatus(
+        body.timedOut ? "Download timed out (increase timeout for large models)." : "Download finished.",
+        body.timedOut === true,
+      );
+    } catch (e) {
+      outEl.textContent = "";
+      if (outMetaEl) {
+        outMetaEl.textContent = "—";
+        outMetaEl.classList.add("hidden");
+      }
+      setDockerStatus(e instanceof Error ? e.message : String(e), true);
+    } finally {
+      btnRun.disabled = false;
+    }
+    return;
+  }
+
   if (isDiagnosticsMode()) {
     const command = inputDiagCommand?.value.trim() ?? "";
     if (!command) {
@@ -444,13 +704,26 @@ export function initDockerTools(): void {
     syncPipeProbeVisibility();
   });
   selMode?.addEventListener("change", () => {
-    const diagnostics = isDiagnosticsMode();
-    setDiagnosticsUIVisibility(diagnostics);
-    setDockerStatus(
-      diagnostics
-        ? "Diagnostics shell enabled. Commands run with docker exec -i … bash -lc."
-        : "Structured tools enabled.",
-    );
+    const mode = getToolsMode();
+    setToolsModeUI(mode);
+    if (mode === "diagnostics") {
+      setDockerStatus("Diagnostics shell enabled. Commands run with docker exec -i … bash -lc.");
+    } else if (mode === "transfer") {
+      prefillTransferModelDirFromPrefs();
+      setDockerStatus(
+        "Model transfer (NCCL): start master (rank 0) first, then worker (rank 1). Uses python3 /workspace/model_transfer/model_transfer.py.",
+      );
+    } else if (mode === "download") {
+      prefillDownloadModelIdFromPrefs();
+      setDockerStatus(
+        "Hugging Face download via transformers (config, tokenizer, weights). Uses python3 /workspace/model_download/download.py.",
+      );
+    } else {
+      setDockerStatus("Structured tools enabled.");
+    }
+  });
+  selTransferRole?.addEventListener("change", () => {
+    syncTransferRoleSubfields();
   });
   selDiagPreset?.addEventListener("change", () => {
     const selected = DIAGNOSTICS_PRESETS.find((p) => p.id === selDiagPreset.value);
@@ -460,7 +733,23 @@ export function initDockerTools(): void {
     void loadContainers();
   });
   loadDiagnosticsPresets();
-  setDiagnosticsUIVisibility(false);
+  setToolsModeUI("tools");
+  prefillTransferModelDirFromPrefs();
+  prefillDownloadModelIdFromPrefs();
+  onPreferredModelChange((model) => {
+    const m = model.trim();
+    if (inputTransferModelDir && !inputTransferModelDir.value.trim() && m.startsWith("/")) {
+      inputTransferModelDir.value = m;
+    }
+    if (
+      inputDownloadModelId &&
+      !inputDownloadModelId.value.trim() &&
+      m.includes("/") &&
+      !m.startsWith("/")
+    ) {
+      inputDownloadModelId.value = m;
+    }
+  });
   void loadTools();
   void loadContainers();
 }

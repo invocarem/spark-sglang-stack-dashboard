@@ -7,11 +7,15 @@ import {
   assertSafeContainerName,
   dockerHost,
   runDiagnosticsInContainer,
+  runModelTransferInContainer,
+  runModelDownloadInContainer,
   validateDiagnosticsCommand,
   validatePipelineSegments,
   TOOLS,
   DEFAULT_TOOL_ID,
   getToolMeta,
+  MODEL_TRANSFER_TIMEOUT_MIN_MS,
+  MODEL_TRANSFER_TIMEOUT_MAX_MS,
 } from "../docker.js";
 import {
   type LaunchProvider,
@@ -296,6 +300,158 @@ export function registerCoreRoutes(app: Hono): void {
       stdout: out,
       stderr: err || undefined,
     });
+  });
+
+  app.post("/api/model-transfer/exec", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+    if (typeof body !== "object" || body === null) {
+      return c.json({ error: "Expected JSON object" }, 400);
+    }
+    const o = body as Record<string, unknown>;
+    const container = typeof o.container === "string" ? o.container.trim() : "";
+    const roleRaw = typeof o.role === "string" ? o.role.trim().toLowerCase() : "";
+    const role = roleRaw === "worker" ? "worker" : roleRaw === "master" ? "master" : "";
+    const modelDir = typeof o.modelDir === "string" ? o.modelDir.trim() : "";
+    const workerSrcDir =
+      typeof o.workerSrcDir === "string" && o.workerSrcDir.trim()
+        ? o.workerSrcDir.trim()
+        : "/tmp/.model_transfer_unused";
+    const masterAddr = typeof o.masterAddr === "string" ? o.masterAddr.trim() : "";
+    const masterPortRaw = typeof o.masterPort === "number" ? o.masterPort : Number(o.masterPort);
+    const worldSizeRaw = typeof o.worldSize === "number" ? o.worldSize : Number(o.worldSize);
+    const allFiles = o.allFiles === true;
+    const timeoutMsRaw = typeof o.timeoutMs === "number" ? o.timeoutMs : Number(o.timeoutMs);
+
+    if (!container) return c.json({ error: "Missing container" }, 400);
+    if (!role) return c.json({ error: 'role must be "master" or "worker"' }, 400);
+    if (!modelDir) return c.json({ error: "Missing modelDir" }, 400);
+    if (!masterAddr) return c.json({ error: "Missing masterAddr" }, 400);
+
+    try {
+      assertSafeContainerName(container);
+    } catch {
+      return c.json({ error: "Invalid container name" }, 400);
+    }
+
+    const masterPort = Number.isFinite(masterPortRaw)
+      ? Math.trunc(masterPortRaw)
+      : 29500;
+    const worldSize = Number.isFinite(worldSizeRaw) && worldSizeRaw > 0
+      ? Math.trunc(worldSizeRaw)
+      : 2;
+
+    const timeoutMs = Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0
+      ? Math.trunc(timeoutMsRaw)
+      : 3_600_000;
+    const cappedTimeout = Math.max(
+      MODEL_TRANSFER_TIMEOUT_MIN_MS,
+      Math.min(MODEL_TRANSFER_TIMEOUT_MAX_MS, timeoutMs),
+    );
+
+    try {
+      const result = await runModelTransferInContainer(
+        container,
+        {
+          role,
+          modelDir,
+          workerSrcDir,
+          masterAddr,
+          masterPort,
+          worldSize,
+          allFiles: role === "master" && allFiles,
+        },
+        { timeoutMs: cappedTimeout, maxOutputBytes: 5_000_000 },
+      );
+      const statusCode = result.timedOut ? 408 : result.code === 0 && !result.timedOut ? 200 : 502;
+      return c.json(
+        {
+          ok: result.code === 0 && !result.timedOut,
+          container,
+          role,
+          modelDir,
+          masterAddr,
+          masterPort,
+          worldSize,
+          exitCode: result.code,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          timedOut: result.timedOut,
+          truncated: result.truncated,
+          durationMs: result.durationMs,
+        },
+        statusCode,
+      );
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      return c.json({ error: message }, 400);
+    }
+  });
+
+  app.post("/api/model-download/exec", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+    if (typeof body !== "object" || body === null) {
+      return c.json({ error: "Expected JSON object" }, 400);
+    }
+    const o = body as Record<string, unknown>;
+    const container = typeof o.container === "string" ? o.container.trim() : "";
+    const modelId = typeof o.modelId === "string" ? o.modelId.trim() : "";
+    const saveDir =
+      typeof o.saveDir === "string" && o.saveDir.trim() ? o.saveDir.trim() : "/data/hf";
+    const timeoutMsRaw = typeof o.timeoutMs === "number" ? o.timeoutMs : Number(o.timeoutMs);
+
+    if (!container) return c.json({ error: "Missing container" }, 400);
+    if (!modelId) return c.json({ error: "Missing modelId" }, 400);
+
+    try {
+      assertSafeContainerName(container);
+    } catch {
+      return c.json({ error: "Invalid container name" }, 400);
+    }
+
+    const timeoutMs = Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0
+      ? Math.trunc(timeoutMsRaw)
+      : 3_600_000;
+    const cappedTimeout = Math.max(
+      MODEL_TRANSFER_TIMEOUT_MIN_MS,
+      Math.min(MODEL_TRANSFER_TIMEOUT_MAX_MS, timeoutMs),
+    );
+
+    try {
+      const result = await runModelDownloadInContainer(
+        container,
+        { modelId, saveDir },
+        { timeoutMs: cappedTimeout, maxOutputBytes: 5_000_000 },
+      );
+      const statusCode = result.timedOut ? 408 : result.code === 0 && !result.timedOut ? 200 : 502;
+      return c.json(
+        {
+          ok: result.code === 0 && !result.timedOut,
+          container,
+          modelId,
+          saveDir,
+          exitCode: result.code,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          timedOut: result.timedOut,
+          truncated: result.truncated,
+          durationMs: result.durationMs,
+        },
+        statusCode,
+      );
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      return c.json({ error: message }, 400);
+    }
   });
 
   app.post("/api/diagnostics/exec", async (c) => {

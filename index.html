@@ -254,6 +254,8 @@
                 <select id="sel-diagnostics-mode" aria-label="Tools mode">
                   <option value="tools">Structured tools</option>
                   <option value="diagnostics">Diagnostics shell</option>
+                  <option value="transfer">Model transfer (NCCL)</option>
+                  <option value="download">Download model (HF)</option>
                 </select>
               </label>
               <div id="docker-container-field" class="field">
@@ -300,6 +302,102 @@
                   placeholder="e.g. grep NC, head -50"
                   aria-label="Pipeline command B"
                 />
+              </label>
+            </div>
+            <div id="field-transfer" class="row hidden">
+              <label class="field">
+                <span>Role</span>
+                <select id="sel-transfer-role" aria-label="HF transfer role">
+                  <option value="master">Master (rank 0 — sender)</option>
+                  <option value="worker">Worker (rank 1 — receiver)</option>
+                </select>
+              </label>
+              <label class="field field-grow">
+                <span>Model directory</span>
+                <input
+                  type="text"
+                  id="input-transfer-model-dir"
+                  autocomplete="off"
+                  placeholder="/data/hf/Meta-Llama-3-8B"
+                  aria-label="Model directory path inside container"
+                />
+              </label>
+              <label class="field">
+                <span>Master address</span>
+                <input
+                  type="text"
+                  id="input-transfer-master-addr"
+                  autocomplete="off"
+                  placeholder="192.168.x.x (IP the worker uses)"
+                  aria-label="Distributed master address"
+                />
+              </label>
+              <label class="field">
+                <span>Master port</span>
+                <input
+                  type="number"
+                  id="input-transfer-master-port"
+                  min="1"
+                  max="65535"
+                  value="29500"
+                  aria-label="Master port"
+                />
+              </label>
+              <label id="field-transfer-timeout" class="field">
+                <span>Timeout</span>
+                <select id="sel-transfer-timeout" aria-label="Transfer timeout">
+                  <option value="900000">15 min</option>
+                  <option value="3600000" selected>1 h</option>
+                  <option value="14400000">4 h</option>
+                  <option value="86400000">24 h</option>
+                </select>
+              </label>
+            </div>
+            <div id="field-transfer-extra" class="row hidden">
+              <label id="field-transfer-worker-src" class="field field-grow hidden">
+                <span>Worker sender stub (rank 1)</span>
+                <input
+                  type="text"
+                  id="input-transfer-worker-src"
+                  autocomplete="off"
+                  value="/tmp/.model_transfer_unused"
+                  aria-label="Unused source path on worker"
+                />
+              </label>
+              <label id="field-transfer-all-files" class="field checkbox-row">
+                <input type="checkbox" id="chk-transfer-all-files" />
+                <span>Send all files (master — use when src and dest are the same path)</span>
+              </label>
+            </div>
+            <div id="field-download" class="row hidden">
+              <label class="field field-grow">
+                <span>Model id</span>
+                <input
+                  type="text"
+                  id="input-download-model-id"
+                  autocomplete="off"
+                  placeholder="Qwen/Qwen2.5-7B-Instruct"
+                  aria-label="Hugging Face model repository id"
+                />
+              </label>
+              <label class="field field-grow">
+                <span>Save directory</span>
+                <input
+                  type="text"
+                  id="input-download-save-dir"
+                  autocomplete="off"
+                  value="/data/hf"
+                  aria-label="Parent directory for downloads inside container"
+                />
+              </label>
+              <label class="field">
+                <span>Timeout</span>
+                <select id="sel-download-timeout" aria-label="Download timeout">
+                  <option value="900000">15 min</option>
+                  <option value="3600000" selected>1 h</option>
+                  <option value="14400000">4 h</option>
+                  <option value="86400000">24 h</option>
+                </select>
               </label>
             </div>
             <label id="field-diag-command" class="field field-grow hidden">
