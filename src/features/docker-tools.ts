@@ -419,6 +419,8 @@ async function runTool(): Promise<void> {
         return;
       }
 
+      const hostLog = res.headers.get("X-Monitor-Tool-Log")?.trim() ?? "";
+
       const reader = res.body?.getReader();
       if (!reader) {
         setDockerStatus("No response body from server.", true);
@@ -504,6 +506,7 @@ async function runTool(): Promise<void> {
       outEl.textContent = normalizeProbeText(outAcc).trim() || "(No output.)";
       if (outMetaEl && endEvent) {
         const metaLines = [
+          `hostLog: ${hostLog || "—"}`,
           `container: ${container}`,
           `role: ${role}`,
           `modelDir: ${modelDir}`,
@@ -589,6 +592,8 @@ async function runTool(): Promise<void> {
         return;
       }
 
+      const hostLog = res.headers.get("X-Monitor-Tool-Log")?.trim() ?? "";
+
       const reader = res.body?.getReader();
       if (!reader) {
         setDockerStatus("No response body from server.", true);
@@ -674,6 +679,7 @@ async function runTool(): Promise<void> {
       outEl.textContent = normalizeProbeText(outAcc).trim() || "(No output.)";
       if (outMetaEl && endEvent) {
         const metaLines = [
+          `hostLog: ${hostLog || "—"}`,
           `container: ${container}`,
           `modelId: ${modelId}`,
           `saveDir: ${saveDir}`,

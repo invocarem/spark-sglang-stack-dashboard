@@ -39,6 +39,7 @@ import {
   stopStackContainer,
 } from "../stack-run.js";
 import { findRepoRoot } from "../repo-root.js";
+import { createMonitorToolLogSession } from "../tool-monitor-log.js";
 
 type ProviderId = "sglang";
 
@@ -445,10 +446,26 @@ export function registerCoreRoutes(app: Hono): void {
       Math.min(MODEL_TRANSFER_TIMEOUT_MAX_MS, timeoutMs),
     );
 
+    const toolLog = createMonitorToolLogSession("model-transfer", {
+      container,
+      role,
+      modelDir,
+      workerSrcDir,
+      masterAddr,
+      masterPort,
+      worldSize,
+      allFiles: role === "master" && allFiles,
+      timeoutMs: cappedTimeout,
+    });
+    if (toolLog) {
+      c.header("X-Monitor-Tool-Log", toolLog.relativePath);
+    }
+
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
         const send = (obj: unknown) => {
+          toolLog?.appendStreamEvent(obj);
           controller.enqueue(encoder.encode(`${JSON.stringify(obj)}\n`));
         };
         try {
@@ -472,6 +489,7 @@ export function registerCoreRoutes(app: Hono): void {
           const message = e instanceof Error ? e.message : String(e);
           send({ kind: "error", message });
         } finally {
+          toolLog?.end();
           controller.close();
         }
       },
@@ -579,10 +597,21 @@ export function registerCoreRoutes(app: Hono): void {
       Math.min(MODEL_TRANSFER_TIMEOUT_MAX_MS, timeoutMs),
     );
 
+    const toolLog = createMonitorToolLogSession("hf-download", {
+      container,
+      modelId,
+      saveDir,
+      timeoutMs: cappedTimeout,
+    });
+    if (toolLog) {
+      c.header("X-Monitor-Tool-Log", toolLog.relativePath);
+    }
+
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
         const send = (obj: unknown) => {
+          toolLog?.appendStreamEvent(obj);
           controller.enqueue(encoder.encode(`${JSON.stringify(obj)}\n`));
         };
         try {
@@ -598,6 +627,7 @@ export function registerCoreRoutes(app: Hono): void {
           const message = e instanceof Error ? e.message : String(e);
           send({ kind: "error", message });
         } finally {
+          toolLog?.end();
           controller.close();
         }
       },
