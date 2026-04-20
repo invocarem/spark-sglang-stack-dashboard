@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # Configuration variables
-MODEL="/data/hf/minimax"
+MODEL="/data/hf/saricles_MiniMax-M2.7-NVFP4-GB10-AC"
 SERVED_MODEL_NAME="minimax"
-CONTEXT_LENGTH=32768
+CONTEXT_LENGTH=65536
 MEM_FRACTION_STATIC=0.8
 TENSOR_PARALLEL=2
 HOST="0.0.0.0"
@@ -23,7 +23,7 @@ python3 -m sglang.launch_server \
     --attention-backend ${ATTENTION_BACKEND} \
     --tool-call-parser ${TOOL_CALL_PARSER} \
     --reasoning-parser minimax-append-think \
-    --mem-fraction-static 0.94 \
-    --max-total-tokens 1024 \
-    --max-running-requests 1 \
+    --mem-fraction-static ${MEM_FRACTION_STATIC} \
+    --max-total-tokens ${CONTEXT_LENGTH} \
+    --max-running-requests 3 \
     --kv-cache-dtype fp8_e4m3 
