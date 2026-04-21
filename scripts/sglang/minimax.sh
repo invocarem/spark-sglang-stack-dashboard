@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Configuration variables
-MODEL="/data/hf/saricles_MiniMax-M2.7-NVFP4-GB10-AC"
+MODEL="/data/hf/saricles_MiniMax-M2.7-NVFP4-GB10"
 SERVED_MODEL_NAME="minimax"
 CONTEXT_LENGTH=65536
 MEM_FRACTION_STATIC=0.8
