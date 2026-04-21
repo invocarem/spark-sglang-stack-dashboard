@@ -4,7 +4,7 @@
 MODEL="/data/hf/saricles_MiniMax-M2.7-NVFP4-GB10"
 SERVED_MODEL_NAME="minimax"
 CONTEXT_LENGTH=65536
-MEM_FRACTION_STATIC=0.92
+MEM_FRACTION_STATIC=0.90
 TENSOR_PARALLEL=2
 HOST="0.0.0.0"
 PORT=30000
@@ -17,8 +17,8 @@ SGLANG_ENABLE_SPEC_V2=true python3 -m sglang.launch_server \
     --model-path ${MODEL} \
     --served-model-name ${SERVED_MODEL_NAME} \
     --context-length ${CONTEXT_LENGTH} \
-    --model-loader-extra-config '{"enable_multithread_load": true, "num_threads": 16}' \
-    --load-format fastsafetensors \
+    --model-loader-extra-config '{"enable_multithread_load": true}' \
+    --load-format safetensors \
     --tp-size ${TENSOR_PARALLEL} \
     --host ${HOST} \
     --port ${PORT} \
