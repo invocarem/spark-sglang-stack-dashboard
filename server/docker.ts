@@ -1009,6 +1009,328 @@ export type ModelDownloadStreamEvent =
   | { kind: "chunk"; stream: "stdout" | "stderr"; text: string }
   | { kind: "end"; exitCode: number | null; timedOut: boolean; truncated: boolean; durationMs: number };
 
+/** Params for {@link streamBenchmarkSglangInContainer} (maps to `tools/benchmark_sglang.py`). */
+export type BenchmarkSglangParams = {
+  baseUrl: string;
+  backend: string;
+  datasetName: string;
+  numPrompts: number;
+  randomInputLen: number;
+  randomOutputLen: number;
+  maxConcurrency: number | null;
+  /** OpenAI `model` field; empty = script resolves via `/v1/models` or env */
+  model: string;
+  /** HF repo for bench `--model`; empty = omit (script uses tokenizer) */
+  hfModel: string;
+  /** HF tokenizer repo; empty = omit (script default tokenizer) */
+  tokenizer: string;
+  /** JSON object string for `--extra-request-body`; empty = omit */
+  extraRequestBody: string | null;
+};
+
+/** NDJSON events for {@link streamBenchmarkSglangInContainer}. */
+export type BenchmarkSglangStreamEvent =
+  | { kind: "chunk"; stream: "stdout" | "stderr"; text: string }
+  | { kind: "end"; exitCode: number | null; timedOut: boolean; truncated: boolean; durationMs: number };
+
+function validateBenchmarkHttpUrl(s: string): string | null {
+  const t = s.trim();
+  if (!t) return "Base URL is required";
+  if (t.length > 2048) return "Base URL is too long";
+  if (/[\n\r\0]/.test(t)) return "Base URL contains invalid characters";
+  try {
+    const u = new URL(t);
+    if (u.protocol !== "http:" && u.protocol !== "https:") {
+      return "Base URL must use http or https";
+    }
+    return null;
+  } catch {
+    return "Base URL is not a valid URL";
+  }
+}
+
+function validateBenchmarkBackend(s: string): string | null {
+  const t = s.trim();
+  if (!t) return "Backend is required";
+  if (t.length > 120) return "Backend is too long";
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(t)) return "Backend has invalid characters";
+  return null;
+}
+
+function validateBenchmarkDatasetName(s: string): string | null {
+  const t = s.trim();
+  if (!t) return "Dataset name is required";
+  if (t.length > 120) return "Dataset name is too long";
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(t)) return "Dataset name has invalid characters";
+  return null;
+}
+
+function validateOptionalServedModelId(s: string): string | null {
+  const t = s.trim();
+  if (!t) return null;
+  if (t.length > 500) return "Served model id is too long";
+  if (/[\n\r\0]/.test(t)) return "Served model id contains invalid characters";
+  return null;
+}
+
+function validateBenchmarkExtraRequestBodyJson(raw: string): string | null {
+  const t = raw.trim();
+  if (!t) return null;
+  try {
+    const v = JSON.parse(t) as unknown;
+    if (v === null || typeof v !== "object" || Array.isArray(v)) {
+      return "extraRequestBody must be a JSON object";
+    }
+    return null;
+  } catch {
+    return "extraRequestBody is not valid JSON";
+  }
+}
+
+function benchmarkSglangDockerArgs(container: string, params: BenchmarkSglangParams): string[] {
+  const envArgs = dockerExecToolEnvArgs();
+  const scriptPath = `${WORKSPACE_TOOLS}/benchmark_sglang.py`;
+  const args: string[] = ["exec", "-i", ...envArgs, container, "python3", "-u", scriptPath];
+  args.push("--base-url", params.baseUrl.trim());
+  args.push("--backend", params.backend.trim());
+  args.push("--dataset-name", params.datasetName.trim());
+  args.push("--num-prompts", String(params.numPrompts));
+  args.push("--random-input-len", String(params.randomInputLen));
+  args.push("--random-output-len", String(params.randomOutputLen));
+  if (params.maxConcurrency !== null) {
+    args.push("--max-concurrency", String(params.maxConcurrency));
+  }
+  const model = params.model.trim();
+  if (model) args.push("--model", model);
+  const hf = params.hfModel.trim();
+  if (hf) args.push("--hf-model", hf);
+  const tok = params.tokenizer.trim();
+  if (tok) args.push("--tokenizer", tok);
+  const extra = params.extraRequestBody?.trim();
+  if (extra) args.push("--extra-request-body", extra);
+  return args;
+}
+
+/**
+ * Runs `benchmark_sglang.py` in the container with argv (same as `python3 -m sglang.bench_serving` wrapper).
+ * Streams stdout/stderr for long bench runs.
+ */
+export async function streamBenchmarkSglangInContainer(
+  container: string,
+  params: BenchmarkSglangParams,
+  options: ModelTransferExecOptions,
+  emit: (event: BenchmarkSglangStreamEvent) => void,
+): Promise<void> {
+  assertSafeContainerName(container);
+
+  const errUrl = validateBenchmarkHttpUrl(params.baseUrl);
+  if (errUrl) throw new Error(errUrl);
+  const errBack = validateBenchmarkBackend(params.backend);
+  if (errBack) throw new Error(errBack);
+  const errDs = validateBenchmarkDatasetName(params.datasetName);
+  if (errDs) throw new Error(errDs);
+  const errModel = validateOptionalServedModelId(params.model);
+  if (errModel) throw new Error(errModel);
+  if (params.hfModel.trim()) {
+    const errHf = validateHuggingFaceRepoId(params.hfModel.trim());
+    if (errHf) throw new Error(errHf);
+  }
+  if (params.tokenizer.trim()) {
+    const errT = validateHuggingFaceRepoId(params.tokenizer.trim());
+    if (errT) throw new Error(`Tokenizer: ${errT}`);
+  }
+  const errExtra = validateBenchmarkExtraRequestBodyJson(params.extraRequestBody ?? "");
+  if (errExtra) throw new Error(errExtra);
+
+  const timeoutMs = Math.max(
+    MODEL_TRANSFER_TIMEOUT_MIN_MS,
+    Math.min(
+      MODEL_TRANSFER_TIMEOUT_MAX_MS,
+      Math.trunc(options.timeoutMs ?? 3_600_000),
+    ),
+  );
+  const maxOutputBytes = Math.max(
+    1024,
+    Math.min(10_000_000, Math.trunc(options.maxOutputBytes ?? 5_000_000)),
+  );
+
+  const args: string[] = benchmarkSglangDockerArgs(container, params);
+
+  await new Promise<void>((resolve, reject) => {
+    const started = Date.now();
+    const child = spawn("docker", args, {
+      windowsHide: true,
+      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+    });
+
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let truncated = false;
+    let timedOut = false;
+
+    const capAppend = (chunk: string, target: "stdout" | "stderr"): void => {
+      const bytes = Buffer.byteLength(chunk, "utf8");
+      if (target === "stdout") {
+        const remaining = maxOutputBytes - stdoutBytes;
+        if (remaining <= 0) {
+          truncated = true;
+          return;
+        }
+        if (bytes <= remaining) {
+          stdoutBytes += bytes;
+          emit({ kind: "chunk", stream: "stdout", text: chunk });
+        } else {
+          const partial = Buffer.from(chunk, "utf8").subarray(0, remaining).toString("utf8");
+          stdoutBytes += remaining;
+          truncated = true;
+          emit({ kind: "chunk", stream: "stdout", text: partial });
+        }
+        return;
+      }
+      const remaining = maxOutputBytes - stderrBytes;
+      if (remaining <= 0) {
+        truncated = true;
+        return;
+      }
+      if (bytes <= remaining) {
+        stderrBytes += bytes;
+        emit({ kind: "chunk", stream: "stderr", text: chunk });
+      } else {
+        const partial = Buffer.from(chunk, "utf8").subarray(0, remaining).toString("utf8");
+        stderrBytes += remaining;
+        truncated = true;
+        emit({ kind: "chunk", stream: "stderr", text: partial });
+      }
+    };
+
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => capAppend(chunk, "stdout"));
+    child.stderr?.on("data", (chunk: string) => capAppend(chunk, "stderr"));
+    child.on("error", reject);
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      emit({
+        kind: "end",
+        exitCode: code,
+        timedOut,
+        truncated,
+        durationMs: Date.now() - started,
+      });
+      resolve();
+    });
+  });
+}
+
+export type ParseBenchmarkSglangRequestResult =
+  | { ok: true; container: string; params: BenchmarkSglangParams; timeoutMs: number }
+  | { ok: false; error: string };
+
+/** Parse and validate POST body for `/api/benchmark-sglang/stream`. */
+export function parseBenchmarkSglangRequest(body: Record<string, unknown>): ParseBenchmarkSglangRequestResult {
+  const container = typeof body.container === "string" ? body.container.trim() : "";
+  if (!container) return { ok: false, error: "Missing container" };
+
+  const timeoutMsRaw = typeof body.timeoutMs === "number" ? body.timeoutMs : Number(body.timeoutMs);
+  const timeoutMs = Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0
+    ? Math.trunc(timeoutMsRaw)
+    : 3_600_000;
+  const cappedTimeout = Math.max(
+    MODEL_TRANSFER_TIMEOUT_MIN_MS,
+    Math.min(MODEL_TRANSFER_TIMEOUT_MAX_MS, timeoutMs),
+  );
+
+  const baseUrl = typeof body.baseUrl === "string" ? body.baseUrl : "";
+  const errUrl = validateBenchmarkHttpUrl(baseUrl);
+  if (errUrl) return { ok: false, error: errUrl };
+
+  const backend = typeof body.backend === "string" ? body.backend : "";
+  const errBack = validateBenchmarkBackend(backend);
+  if (errBack) return { ok: false, error: errBack };
+
+  const datasetName = typeof body.datasetName === "string" ? body.datasetName : "";
+  const errDs = validateBenchmarkDatasetName(datasetName);
+  if (errDs) return { ok: false, error: errDs };
+
+  const numPromptsRaw = typeof body.numPrompts === "number" ? body.numPrompts : Number(body.numPrompts);
+  if (!Number.isFinite(numPromptsRaw) || numPromptsRaw < 1 || numPromptsRaw > 1_000_000) {
+    return { ok: false, error: "numPrompts must be between 1 and 1000000" };
+  }
+  const numPrompts = Math.trunc(numPromptsRaw);
+
+  const randomInRaw =
+    typeof body.randomInputLen === "number" ? body.randomInputLen : Number(body.randomInputLen);
+  const randomOutRaw =
+    typeof body.randomOutputLen === "number" ? body.randomOutputLen : Number(body.randomOutputLen);
+  if (!Number.isFinite(randomInRaw) || randomInRaw < 1 || randomInRaw > 1_000_000) {
+    return { ok: false, error: "randomInputLen must be between 1 and 1000000" };
+  }
+  if (!Number.isFinite(randomOutRaw) || randomOutRaw < 1 || randomOutRaw > 1_000_000) {
+    return { ok: false, error: "randomOutputLen must be between 1 and 1000000" };
+  }
+
+  let maxConcurrency: number | null = null;
+  const mc = body.maxConcurrency;
+  if (mc !== undefined && mc !== null && mc !== "") {
+    const n = typeof mc === "number" ? mc : Number(mc);
+    if (!Number.isFinite(n) || n < 1 || n > 65_535) {
+      return { ok: false, error: "maxConcurrency must be between 1 and 65535, or omitted" };
+    }
+    maxConcurrency = Math.trunc(n);
+  }
+
+  const model = typeof body.model === "string" ? body.model : "";
+  const errModel = validateOptionalServedModelId(model);
+  if (errModel) return { ok: false, error: errModel };
+
+  const hfModel = typeof body.hfModel === "string" ? body.hfModel : "";
+  if (hfModel.trim()) {
+    const errHf = validateHuggingFaceRepoId(hfModel.trim());
+    if (errHf) return { ok: false, error: `HF model: ${errHf}` };
+  }
+
+  const tokenizer = typeof body.tokenizer === "string" ? body.tokenizer : "";
+  if (tokenizer.trim()) {
+    const errT = validateHuggingFaceRepoId(tokenizer.trim());
+    if (errT) return { ok: false, error: `Tokenizer: ${errT}` };
+  }
+
+  let extraRequestBody: string | null = null;
+  if (body.extraRequestBody !== undefined && body.extraRequestBody !== null) {
+    if (typeof body.extraRequestBody !== "string") {
+      return { ok: false, error: "extraRequestBody must be a string" };
+    }
+    const errEx = validateBenchmarkExtraRequestBodyJson(body.extraRequestBody);
+    if (errEx) return { ok: false, error: errEx };
+    extraRequestBody = body.extraRequestBody.trim() ? body.extraRequestBody : null;
+  }
+
+  return {
+    ok: true,
+    container,
+    timeoutMs: cappedTimeout,
+    params: {
+      baseUrl: baseUrl.trim(),
+      backend: backend.trim(),
+      datasetName: datasetName.trim(),
+      numPrompts,
+      randomInputLen: Math.trunc(randomInRaw),
+      randomOutputLen: Math.trunc(randomOutRaw),
+      maxConcurrency,
+      model,
+      hfModel,
+      tokenizer,
+      extraRequestBody,
+    },
+  };
+}
+
 /**
  * Same docker invocation as {@link runModelDownloadInContainer}, but forwards stdout/stderr
  * as they arrive (for live progress bars and heartbeats in the UI).

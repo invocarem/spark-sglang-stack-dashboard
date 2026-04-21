@@ -113,6 +113,19 @@ const fieldDownload = document.querySelector<HTMLDivElement>("#field-download");
 const inputDownloadModelId = document.querySelector<HTMLInputElement>("#input-download-model-id");
 const inputDownloadSaveDir = document.querySelector<HTMLInputElement>("#input-download-save-dir");
 const selDownloadTimeout = document.querySelector<HTMLSelectElement>("#sel-download-timeout");
+const fieldBenchmark = document.querySelector<HTMLDivElement>("#field-benchmark");
+const inputBenchBaseUrl = document.querySelector<HTMLInputElement>("#input-bench-base-url");
+const inputBenchBackend = document.querySelector<HTMLInputElement>("#input-bench-backend");
+const inputBenchDataset = document.querySelector<HTMLInputElement>("#input-bench-dataset");
+const inputBenchNumPrompts = document.querySelector<HTMLInputElement>("#input-bench-num-prompts");
+const inputBenchRandomIn = document.querySelector<HTMLInputElement>("#input-bench-random-in");
+const inputBenchRandomOut = document.querySelector<HTMLInputElement>("#input-bench-random-out");
+const inputBenchMaxConcurrency = document.querySelector<HTMLInputElement>("#input-bench-max-concurrency");
+const inputBenchModel = document.querySelector<HTMLInputElement>("#input-bench-model");
+const inputBenchHfModel = document.querySelector<HTMLInputElement>("#input-bench-hf-model");
+const inputBenchTokenizer = document.querySelector<HTMLInputElement>("#input-bench-tokenizer");
+const textareaBenchExtraBody = document.querySelector<HTMLTextAreaElement>("#textarea-bench-extra-body");
+const selBenchTimeout = document.querySelector<HTMLSelectElement>("#sel-bench-timeout");
 const btnRun = document.querySelector<HTMLButtonElement>("#btn-run");
 const containerField = document.querySelector<HTMLDivElement>("#docker-container-field");
 const statusDocker = document.querySelector<HTMLParagraphElement>("#status-docker");
@@ -134,13 +147,14 @@ function prettyJson(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
-type ToolsMode = "tools" | "diagnostics" | "transfer" | "download";
+type ToolsMode = "tools" | "diagnostics" | "transfer" | "download" | "benchmark";
 
 function getToolsMode(): ToolsMode {
   const v = selMode?.value;
   if (v === "diagnostics") return "diagnostics";
   if (v === "transfer") return "transfer";
   if (v === "download") return "download";
+  if (v === "benchmark") return "benchmark";
   return "tools";
 }
 
@@ -156,6 +170,10 @@ function isDownloadMode(): boolean {
   return getToolsMode() === "download";
 }
 
+function isBenchmarkMode(): boolean {
+  return getToolsMode() === "benchmark";
+}
+
 function syncTransferRoleSubfields(): void {
   const worker = selTransferRole?.value === "worker";
   fieldTransferWorkerSrc?.classList.toggle("hidden", !worker);
@@ -166,15 +184,17 @@ function setToolsModeUI(mode: ToolsMode): void {
   const diagnostics = mode === "diagnostics";
   const transfer = mode === "transfer";
   const download = mode === "download";
+  const benchmark = mode === "benchmark";
   const tools = mode === "tools";
 
-  fieldToolSelect?.classList.toggle("hidden", diagnostics || transfer || download);
+  fieldToolSelect?.classList.toggle("hidden", diagnostics || transfer || download || benchmark);
   fieldDiagPreset?.classList.toggle("hidden", !diagnostics);
   fieldDiagCommand?.classList.toggle("hidden", !diagnostics);
   fieldDiagTimeout?.classList.toggle("hidden", !diagnostics);
   fieldTransfer?.classList.toggle("hidden", !transfer);
   fieldTransferExtra?.classList.toggle("hidden", !transfer);
   fieldDownload?.classList.toggle("hidden", !download);
+  fieldBenchmark?.classList.toggle("hidden", !benchmark);
 
   if (tools) {
     syncPipeProbeVisibility();
@@ -188,6 +208,7 @@ function setToolsModeUI(mode: ToolsMode): void {
   if (!btnRun) return;
   if (transfer) btnRun.textContent = "Start transfer";
   else if (download) btnRun.textContent = "Download model";
+  else if (benchmark) btnRun.textContent = "Run benchmark";
   else if (diagnostics) btnRun.textContent = "Run diagnostics";
   else btnRun.textContent = "Run";
 }
@@ -214,6 +235,18 @@ function prefillDownloadModelIdFromPrefs(): void {
     !inputDownloadModelId.value.trim()
   ) {
     inputDownloadModelId.value = m;
+  }
+}
+
+function prefillBenchServedModelFromPrefs(): void {
+  const m = getPreferredModel().trim();
+  if (
+    inputBenchModel &&
+    !inputBenchModel.value.trim() &&
+    m.includes("/") &&
+    !m.startsWith("/")
+  ) {
+    inputBenchModel.value = m;
   }
 }
 
@@ -719,6 +752,218 @@ async function runTool(): Promise<void> {
     return;
   }
 
+  if (isBenchmarkMode()) {
+    const baseUrl = inputBenchBaseUrl?.value.trim() ?? "";
+    const backend = inputBenchBackend?.value.trim() ?? "";
+    const datasetName = inputBenchDataset?.value.trim() ?? "";
+    const numPromptsRaw = Number(inputBenchNumPrompts?.value ?? "10");
+    const randomInRaw = Number(inputBenchRandomIn?.value ?? "128");
+    const randomOutRaw = Number(inputBenchRandomOut?.value ?? "128");
+    const maxConcRaw = inputBenchMaxConcurrency?.value.trim() ?? "";
+    const model = inputBenchModel?.value.trim() ?? "";
+    const hfModel = inputBenchHfModel?.value.trim() ?? "";
+    const tokenizer = inputBenchTokenizer?.value.trim() ?? "";
+    const extraBody = textareaBenchExtraBody?.value.trim() ?? "";
+    const timeoutMsRaw = Number(selBenchTimeout?.value ?? 3_600_000);
+
+    if (!baseUrl) {
+      setDockerStatus("Enter the API base URL (e.g. http://127.0.0.1:30000).", true);
+      return;
+    }
+    if (!Number.isFinite(numPromptsRaw) || numPromptsRaw < 1 || numPromptsRaw > 1_000_000) {
+      setDockerStatus("Num prompts must be between 1 and 1000000.", true);
+      return;
+    }
+    if (!Number.isFinite(randomInRaw) || randomInRaw < 1 || randomInRaw > 1_000_000) {
+      setDockerStatus("Random input length must be between 1 and 1000000.", true);
+      return;
+    }
+    if (!Number.isFinite(randomOutRaw) || randomOutRaw < 1 || randomOutRaw > 1_000_000) {
+      setDockerStatus("Random output length must be between 1 and 1000000.", true);
+      return;
+    }
+
+    const timeoutMs =
+      Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0 ? Math.trunc(timeoutMsRaw) : 3_600_000;
+
+    let maxConcurrency: number | null = null;
+    if (maxConcRaw) {
+      const n = Number(maxConcRaw);
+      if (!Number.isFinite(n) || n < 1 || n > 65_535) {
+        setDockerStatus("Max concurrency must be between 1 and 65535, or leave empty for unlimited.", true);
+        return;
+      }
+      maxConcurrency = Math.trunc(n);
+    }
+
+    setDockerStatus(`Running benchmark_sglang.py in ${container}…`);
+    btnRun.disabled = true;
+    outEl.textContent = "";
+    if (outMetaEl) {
+      outMetaEl.textContent = "—";
+      outMetaEl.classList.add("hidden");
+    }
+
+    const t0 = Date.now();
+    const tick = window.setInterval(() => {
+      const s = Math.floor((Date.now() - t0) / 1000);
+      setDockerStatus(`Benchmark in ${container}… ${s}s (live output below)`);
+    }, 1000);
+
+    try {
+      const res = await fetch("/api/benchmark-sglang/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          container,
+          baseUrl,
+          backend,
+          datasetName,
+          numPrompts: Math.trunc(numPromptsRaw),
+          randomInputLen: Math.trunc(randomInRaw),
+          randomOutputLen: Math.trunc(randomOutRaw),
+          maxConcurrency,
+          model,
+          hfModel,
+          tokenizer,
+          extraRequestBody: extraBody || null,
+          timeoutMs,
+        }),
+      });
+
+      if (!res.ok) {
+        const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+        setDockerStatus(errBody.error ?? `Run failed (${res.status})`, true);
+        return;
+      }
+
+      const hostLog = res.headers.get("X-Monitor-Tool-Log")?.trim() ?? "";
+
+      const reader = res.body?.getReader();
+      if (!reader) {
+        setDockerStatus("No response body from server.", true);
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let outAcc = "";
+      let endEvent: {
+        exitCode: number | null;
+        timedOut: boolean;
+        truncated: boolean;
+        durationMs: number;
+      } | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let ev: {
+            kind?: string;
+            stream?: string;
+            text?: string;
+            exitCode?: number | null;
+            timedOut?: boolean;
+            truncated?: boolean;
+            durationMs?: number;
+            message?: string;
+          };
+          try {
+            ev = JSON.parse(line) as typeof ev;
+          } catch {
+            continue;
+          }
+          if (ev.kind === "chunk" && typeof ev.text === "string") {
+            outAcc += ev.text;
+            outEl.textContent = normalizeProbeText(outAcc).trimEnd() || "…";
+          } else if (ev.kind === "end") {
+            endEvent = {
+              exitCode: ev.exitCode ?? null,
+              timedOut: ev.timedOut === true,
+              truncated: ev.truncated === true,
+              durationMs: typeof ev.durationMs === "number" ? ev.durationMs : 0,
+            };
+          } else if (ev.kind === "error" && typeof ev.message === "string") {
+            setDockerStatus(ev.message, true);
+            return;
+          }
+        }
+      }
+
+      if (buffer.trim()) {
+        try {
+          const ev = JSON.parse(buffer) as {
+            kind?: string;
+            text?: string;
+            exitCode?: number | null;
+            timedOut?: boolean;
+            truncated?: boolean;
+            durationMs?: number;
+          };
+          if (ev.kind === "chunk" && typeof ev.text === "string") {
+            outAcc += ev.text;
+            outEl.textContent = normalizeProbeText(outAcc).trimEnd() || "(No output.)";
+          } else if (ev.kind === "end") {
+            endEvent = {
+              exitCode: ev.exitCode ?? null,
+              timedOut: ev.timedOut === true,
+              truncated: ev.truncated === true,
+              durationMs: typeof ev.durationMs === "number" ? ev.durationMs : 0,
+            };
+          }
+        } catch {
+          /* ignore trailing garbage */
+        }
+      }
+
+      outEl.textContent = normalizeProbeText(outAcc).trim() || "(No output.)";
+      if (outMetaEl && endEvent) {
+        const metaLines = [
+          `hostLog: ${hostLog || "—"}`,
+          `container: ${container}`,
+          `baseUrl: ${baseUrl}`,
+          `numPrompts: ${String(numPromptsRaw)}`,
+          `exitCode: ${String(endEvent.exitCode ?? "null")}`,
+          `durationMs: ${String(endEvent.durationMs ?? "n/a")}`,
+          `timedOut: ${endEvent.timedOut ? "yes" : "no"}`,
+          `truncated: ${endEvent.truncated ? "yes" : "no"}`,
+        ];
+        outMetaEl.textContent = metaLines.join("\n");
+        outMetaEl.classList.remove("hidden");
+      }
+
+      const ok = endEvent !== null && endEvent.exitCode === 0 && !endEvent.timedOut;
+      if (!endEvent) {
+        setDockerStatus("Benchmark ended without status from server.", true);
+        return;
+      }
+      setDockerStatus(
+        endEvent.timedOut
+          ? "Benchmark timed out (increase timeout or reduce prompts / output length)."
+          : ok
+            ? "Benchmark finished."
+            : "Benchmark finished with errors (see output).",
+        endEvent.timedOut || !ok,
+      );
+    } catch (e) {
+      outEl.textContent = "";
+      if (outMetaEl) {
+        outMetaEl.textContent = "—";
+        outMetaEl.classList.add("hidden");
+      }
+      setDockerStatus(e instanceof Error ? e.message : String(e), true);
+    } finally {
+      window.clearInterval(tick);
+      btnRun.disabled = false;
+    }
+    return;
+  }
+
   if (isDiagnosticsMode()) {
     const command = inputDiagCommand?.value.trim() ?? "";
     if (!command) {
@@ -896,6 +1141,11 @@ export function initDockerTools(): void {
       setDockerStatus(
         "Hugging Face download (snapshot_download + live log). Progress lines and disk heartbeats stream below while the job runs.",
       );
+    } else if (mode === "benchmark") {
+      prefillBenchServedModelFromPrefs();
+      setDockerStatus(
+        "Runs benchmark_sglang.py (sglang.bench_serving) in the container with your parameters. Output streams below.",
+      );
     } else {
       setDockerStatus("Structured tools enabled.");
     }
@@ -914,6 +1164,7 @@ export function initDockerTools(): void {
   setToolsModeUI("tools");
   prefillTransferModelDirFromPrefs();
   prefillDownloadModelIdFromPrefs();
+  prefillBenchServedModelFromPrefs();
   onPreferredModelChange((model) => {
     const m = model.trim();
     if (inputTransferModelDir && !inputTransferModelDir.value.trim() && m.startsWith("/")) {
@@ -926,6 +1177,14 @@ export function initDockerTools(): void {
       !m.startsWith("/")
     ) {
       inputDownloadModelId.value = m;
+    }
+    if (
+      inputBenchModel &&
+      !inputBenchModel.value.trim() &&
+      m.includes("/") &&
+      !m.startsWith("/")
+    ) {
+      inputBenchModel.value = m;
     }
   });
   void loadTools();

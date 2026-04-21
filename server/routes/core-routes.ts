@@ -11,6 +11,8 @@ import {
   streamModelTransferInContainer,
   runModelDownloadInContainer,
   streamModelDownloadInContainer,
+  parseBenchmarkSglangRequest,
+  streamBenchmarkSglangInContainer,
   validateDiagnosticsCommand,
   validatePipelineSegments,
   TOOLS,
@@ -619,6 +621,70 @@ export function registerCoreRoutes(app: Hono): void {
             container,
             { modelId, saveDir },
             { timeoutMs: cappedTimeout, maxOutputBytes: 5_000_000 },
+            (ev) => {
+              send(ev);
+            },
+          );
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          send({ kind: "error", message });
+        } finally {
+          toolLog?.end();
+          controller.close();
+        }
+      },
+    });
+
+    c.header("Content-Type", "application/x-ndjson; charset=utf-8");
+    c.header("Cache-Control", "no-store");
+    c.header("X-Accel-Buffering", "no");
+    return c.body(stream, 200);
+  });
+
+  app.post("/api/benchmark-sglang/stream", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+    if (typeof body !== "object" || body === null) {
+      return c.json({ error: "Expected JSON object" }, 400);
+    }
+    const parsed = parseBenchmarkSglangRequest(body as Record<string, unknown>);
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error }, 400);
+    }
+    const { container, params, timeoutMs } = parsed;
+
+    try {
+      assertSafeContainerName(container);
+    } catch {
+      return c.json({ error: "Invalid container name" }, 400);
+    }
+
+    const toolLog = createMonitorToolLogSession("benchmark-sglang", {
+      container,
+      baseUrl: params.baseUrl,
+      numPrompts: params.numPrompts,
+      timeoutMs,
+    });
+    if (toolLog) {
+      c.header("X-Monitor-Tool-Log", toolLog.relativePath);
+    }
+
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        const send = (obj: unknown) => {
+          toolLog?.appendStreamEvent(obj);
+          controller.enqueue(encoder.encode(`${JSON.stringify(obj)}\n`));
+        };
+        try {
+          await streamBenchmarkSglangInContainer(
+            container,
+            params,
+            { timeoutMs, maxOutputBytes: 5_000_000 },
             (ev) => {
               send(ev);
             },

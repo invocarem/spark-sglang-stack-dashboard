@@ -256,6 +256,7 @@
                   <option value="diagnostics">Diagnostics shell</option>
                   <option value="transfer">Model transfer (NCCL)</option>
                   <option value="download">Download model (HF)</option>
+                  <option value="benchmark">Benchmark (bench_serving)</option>
                 </select>
               </label>
               <div id="docker-container-field" class="field">
@@ -399,6 +400,145 @@
                   <option value="86400000">24 h</option>
                 </select>
               </label>
+            </div>
+            <div id="field-benchmark" class="hidden">
+              <p class="hint">
+                Runs <code>python3 /workspace/tools/benchmark_sglang.py</code> in the container (wrapper around
+                <code>python3 -m sglang.bench_serving</code>). Point <strong>Base URL</strong> at your serving API
+                (defaults match in-container OpenAI on port 30000). Leave <strong>Served model</strong> empty to use
+                <code>GET /v1/models</code> when the server exposes it.
+              </p>
+              <div class="row">
+                <label class="field field-grow">
+                  <span>Base URL</span>
+                  <input
+                    type="text"
+                    id="input-bench-base-url"
+                    autocomplete="off"
+                    value="http://127.0.0.1:30000"
+                    aria-label="Benchmark API base URL"
+                  />
+                </label>
+                <label class="field">
+                  <span>Backend</span>
+                  <input
+                    type="text"
+                    id="input-bench-backend"
+                    autocomplete="off"
+                    value="sglang-oai-chat"
+                    aria-label="bench_serving backend"
+                  />
+                </label>
+                <label class="field">
+                  <span>Dataset</span>
+                  <input
+                    type="text"
+                    id="input-bench-dataset"
+                    autocomplete="off"
+                    value="random"
+                    aria-label="Benchmark dataset name"
+                  />
+                </label>
+              </div>
+              <div class="row">
+                <label class="field">
+                  <span>Num prompts</span>
+                  <input
+                    type="number"
+                    id="input-bench-num-prompts"
+                    min="1"
+                    max="1000000"
+                    value="10"
+                    aria-label="Number of prompts"
+                  />
+                </label>
+                <label class="field">
+                  <span>Random input len</span>
+                  <input
+                    type="number"
+                    id="input-bench-random-in"
+                    min="1"
+                    max="1000000"
+                    value="128"
+                    aria-label="Random input length in tokens"
+                  />
+                </label>
+                <label class="field">
+                  <span>Random output len</span>
+                  <input
+                    type="number"
+                    id="input-bench-random-out"
+                    min="1"
+                    max="1000000"
+                    value="128"
+                    aria-label="Random output length in tokens"
+                  />
+                </label>
+                <label class="field">
+                  <span>Max concurrency</span>
+                  <input
+                    type="number"
+                    id="input-bench-max-concurrency"
+                    min="1"
+                    max="65535"
+                    placeholder="(unlimited)"
+                    aria-label="Max concurrent requests (optional)"
+                  />
+                </label>
+              </div>
+              <div class="row">
+                <label class="field field-grow">
+                  <span>Served model id</span>
+                  <input
+                    type="text"
+                    id="input-bench-model"
+                    autocomplete="off"
+                    placeholder="Optional — same as OpenAI model field"
+                    aria-label="Served model id for benchmark"
+                  />
+                </label>
+                <label class="field field-grow">
+                  <span>HF model (optional)</span>
+                  <input
+                    type="text"
+                    id="input-bench-hf-model"
+                    autocomplete="off"
+                    placeholder="HF repo for bench --model"
+                    aria-label="Hugging Face model for tokenizer check"
+                  />
+                </label>
+                <label class="field field-grow">
+                  <span>Tokenizer (optional)</span>
+                  <input
+                    type="text"
+                    id="input-bench-tokenizer"
+                    autocomplete="off"
+                    value="Qwen/Qwen3.5-397B-A17B-GPTQ-Int4"
+                    aria-label="HF tokenizer repo"
+                  />
+                </label>
+              </div>
+              <div class="row">
+                <label class="field field-grow">
+                  <span>Extra request body (JSON object, optional)</span>
+                  <textarea
+                    id="textarea-bench-extra-body"
+                    rows="2"
+                    autocomplete="off"
+                    placeholder='e.g. {"temperature": 0}'
+                    aria-label="Extra JSON merged into bench request body"
+                  ></textarea>
+                </label>
+                <label class="field">
+                  <span>Timeout</span>
+                  <select id="sel-bench-timeout" aria-label="Benchmark timeout">
+                    <option value="900000">15 min</option>
+                    <option value="3600000" selected>1 h</option>
+                    <option value="14400000">4 h</option>
+                    <option value="86400000">24 h</option>
+                  </select>
+                </label>
+              </div>
             </div>
             <label id="field-diag-command" class="field field-grow hidden">
               <span>Command (<code>bash -lc</code> inside container)</span>

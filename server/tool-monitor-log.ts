@@ -8,7 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { findRepoRoot } from "./repo-root.js";
 
-export type MonitorToolLogKind = "hf-download" | "model-transfer";
+export type MonitorToolLogKind = "hf-download" | "model-transfer" | "benchmark-sglang";
 
 export type MonitorToolLogSession = {
   /** Path relative to repo root, e.g. `.monitor/monitor-hf-download-….log` */
@@ -68,7 +68,12 @@ export function createMonitorToolLogSession(
     return null;
   }
 
-  const prefix = kind === "hf-download" ? "monitor-hf-download" : "monitor-model-transfer";
+  const prefix =
+    kind === "hf-download"
+      ? "monitor-hf-download"
+      : kind === "benchmark-sglang"
+        ? "monitor-benchmark-sglang"
+        : "monitor-model-transfer";
   const name = `${prefix}-${Date.now()}-${randomBytes(4).toString("hex")}.log`;
   const hostPath = path.join(dir, name);
   const relativePath = path.posix.join(".monitor", name);
