@@ -12,6 +12,7 @@ ATTENTION_BACKEND="flashinfer"
 TOOL_CALL_PARSER="minimax-m2"
 CUDA_GRAPH_MAX_BS=4
 MAX_RUNNING_REQUESTS=4
+CHUNKED_PREFILL_SIZE=2048
 
 # Launch the server with single device
 OMP_NUM_THREADS=16 SGLANG_ENABLE_SPEC_V2=true python3 -m sglang.launch_server \
@@ -28,7 +29,9 @@ OMP_NUM_THREADS=16 SGLANG_ENABLE_SPEC_V2=true python3 -m sglang.launch_server \
     --reasoning-parser minimax-append-think \
     --mem-fraction-static ${MEM_FRACTION_STATIC} \
     --max-running-requests ${MAX_RUNNING_REQUESTS} \
+    --max-prefill-tokens=${CHUNKED_PREFILL_SIZE} \
     --kv-cache-dtype bf16 \
     --quantization modelopt_fp4 \
     --cuda-graph-max-bs ${CUDA_GRAPH_MAX_BS} \
+    --preferred-sampling-params '{"temperature":1.0,"top_p":0.95,"top_k":40,"min_p":0.0}' \
     --trust-remote-code 
