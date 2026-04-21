@@ -19,7 +19,6 @@ OMP_NUM_THREADS=16 SGLANG_ENABLE_SPEC_V2=true python3 -m sglang.launch_server \
     --served-model-name ${SERVED_MODEL_NAME} \
     --context-length ${CONTEXT_LENGTH} \
     --model-loader-extra-config '{"enable_multithread_load": true, "num_threads": 8}' \
-    --load-format fastsafetensors \
     --tp-size ${TENSOR_PARALLEL} \
     --host ${HOST} \
     --port ${PORT} \
