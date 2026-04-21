@@ -3,7 +3,7 @@
 # Configuration variables
 MODEL="/data/hf/lukealonso_MiniMax-M2.7-NVFP4"
 SERVED_MODEL_NAME="minimax"
-CONTEXT_LENGTH=32768
+CONTEXT_LENGTH=65536
 MEM_FRACTION_STATIC=0.88
 TENSOR_PARALLEL=2
 HOST="0.0.0.0"
@@ -12,10 +12,10 @@ ATTENTION_BACKEND="flashinfer"
 TOOL_CALL_PARSER="minimax-m2"
 CUDA_GRAPH_MAX_BS=8
 MAX_RUNNING_REQUESTS=4
-CHUNKED_PREFILL_SIZE=8192
+CHUNKED_PREFILL_SIZE=4096
 
 # Launch the server with single device
-SGLANG_CUDA_GRAPH_BS="1,2,4,6,8" OMP_NUM_THREADS=16 SGLANG_ENABLE_SPEC_V2=true python3 -m sglang.launch_server \
+OMP_NUM_THREADS=16 SGLANG_ENABLE_SPEC_V2=true python3 -m sglang.launch_server \
     --model-path ${MODEL} \
     --served-model-name ${SERVED_MODEL_NAME} \
     --context-length ${CONTEXT_LENGTH} \
@@ -32,8 +32,9 @@ SGLANG_CUDA_GRAPH_BS="1,2,4,6,8" OMP_NUM_THREADS=16 SGLANG_ENABLE_SPEC_V2=true p
     --kv-cache-dtype bf16 \
     --quantization modelopt_fp4 \
     --cuda-graph-max-bs ${CUDA_GRAPH_MAX_BS} \
+    --chunked-prefill-size ${CHUNKED_PREFILL_SIZE} \
     --max-prefill-tokens=${CHUNKED_PREFILL_SIZE} \
-    --disable-radix-cache \
+    --enable-flashinfer-allreduce-fusion \
     --schedule-conservativeness 0.7 \
     --preferred-sampling-params '{"temperature":1.0,"top_p":0.95,"top_k":40,"min_p":0.0}' \
     --trust-remote-code 

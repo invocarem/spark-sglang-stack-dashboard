@@ -65,7 +65,11 @@ const chkAuto = document.querySelector<HTMLInputElement>("#chk-logs-auto");
 const statusEl = document.querySelector<HTMLParagraphElement>("#logs-status");
 const outEl = document.querySelector<HTMLPreElement>("#logs-out");
 
-let autoTimer: ReturnType<typeof setInterval> | null = null;
+/** Minimum delay before the next auto poll after the previous one finishes (avoids stacking requests). */
+const AUTO_REFRESH_MIN_GAP_MS = 400;
+
+let autoTimer: ReturnType<typeof setTimeout> | null = null;
+let autoRefreshActive = false;
 
 function stickToLatestLogLines(): void {
   if (!outEl || !chkAuto?.checked) return;
@@ -90,17 +94,25 @@ function setStatus(message: string, isError = false): void {
 }
 
 function stopAuto(): void {
+  autoRefreshActive = false;
   if (autoTimer !== null) {
-    clearInterval(autoTimer);
+    clearTimeout(autoTimer);
     autoTimer = null;
   }
+}
+
+async function runAutoRefreshLoop(): Promise<void> {
+  if (!autoRefreshActive) return;
+  await refreshLog({ quiet: true });
+  if (!autoRefreshActive) return;
+  autoTimer = setTimeout(() => void runAutoRefreshLoop(), AUTO_REFRESH_MIN_GAP_MS);
 }
 
 function setAuto(enabled: boolean): void {
   stopAuto();
   if (enabled) {
-    void refreshLog({ quiet: true });
-    autoTimer = setInterval(() => void refreshLog({ quiet: true }), 3000);
+    autoRefreshActive = true;
+    void runAutoRefreshLoop();
   }
 }
 
@@ -134,7 +146,7 @@ async function refreshLog(options: { quiet?: boolean } = {}): Promise<void> {
   if (!quiet && btnRefresh) btnRefresh.disabled = true;
   try {
     if (source === "launch") {
-      setStatus(`Loading launch log (${container})…`);
+      if (!quiet) setStatus(`Loading launch log (${container})…`);
       const res = await fetch(withProviderQuery(`/api/launch/log?container=${encodeURIComponent(container)}`));
       const body = (await res.json()) as {
         text?: string;
@@ -154,13 +166,16 @@ async function refreshLog(options: { quiet?: boolean } = {}): Promise<void> {
         return;
       }
       const t = typeof body.text === "string" ? normalizeProbeText(body.text) : "";
-      outEl.textContent = t.trim() ? t : "(Log file is empty.)";
-      stickToLatestLogLines();
+      const nextText = t.trim() ? t : "(Log file is empty.)";
+      if (!quiet || nextText !== outEl.textContent) {
+        outEl.textContent = nextText;
+        stickToLatestLogLines();
+      }
       setStatus(`Launch script log — ${container}`);
       return;
     }
 
-    setStatus(`Loading docker logs (${container})…`);
+    if (!quiet) setStatus(`Loading docker logs (${container})…`);
     const res = await fetch(
       `/api/probe?container=${encodeURIComponent(container)}&tool=${encodeURIComponent(DOCKER_LOGS_TOOL)}`,
     );
@@ -175,10 +190,13 @@ async function refreshLog(options: { quiet?: boolean } = {}): Promise<void> {
     }
     const dockerText = formatDockerProbe(body);
     const looksEmpty = dockerText === "(No lines.)" || dockerText.trim() === "";
-    outEl.textContent = looksEmpty
+    const nextDockerText = looksEmpty
       ? `${dockerText}\n\n---\nIf the server logs to /workspace/.monitor/sglang-launch.log (typical), Docker logs may stay quiet. For load progress and server output, switch Source to “Launch script log”.`
       : dockerText;
-    stickToLatestLogLines();
+    if (!quiet || nextDockerText !== outEl.textContent) {
+      outEl.textContent = nextDockerText;
+      stickToLatestLogLines();
+    }
     setStatus(`Docker logs (PID 1) — ${container}`);
   } catch (e) {
     outEl.textContent = e instanceof Error ? e.message : String(e);
