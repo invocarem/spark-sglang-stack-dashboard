@@ -1,19 +1,19 @@
 #!/bin/bash
 
 # Configuration variables
-MODEL="/data/hf/saricles_MiniMax-M2.7-NVFP4-GB10"
+MODEL="/data/hf/lukealonso_MiniMax-M2.7-NVFP4"
 SERVED_MODEL_NAME="minimax"
 CONTEXT_LENGTH=65536
 MEM_FRACTION_STATIC=0.90
 TENSOR_PARALLEL=2
 HOST="0.0.0.0"
 PORT=30000
-ATTENTION_BACKEND="triton"
+ATTENTION_BACKEND="flashinfer"
 TOOL_CALL_PARSER="minimax-m2"
 CUDA_GRAPH_MAX_BS=2
 
 # Launch the server with single device
-SGLANG_ENABLE_SPEC_V2=true python3 -m sglang.launch_server \
+OMP_NUM_THREADS=16 SGLANG_ENABLE_SPEC_V2=true python3 -m sglang.launch_server \
     --model-path ${MODEL} \
     --served-model-name ${SERVED_MODEL_NAME} \
     --context-length ${CONTEXT_LENGTH} \
