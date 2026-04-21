@@ -12,10 +12,10 @@ ATTENTION_BACKEND="flashinfer"
 TOOL_CALL_PARSER="minimax-m2"
 CUDA_GRAPH_MAX_BS=8
 MAX_RUNNING_REQUESTS=4
-CHUNKED_PREFILL_SIZE=2048
+CHUNKED_PREFILL_SIZE=8192
 
 # Launch the server with single device
-OMP_NUM_THREADS=16 SGLANG_ENABLE_SPEC_V2=true python3 -m sglang.launch_server \
+SGLANG_CUDA_GRAPH_BS="1,2,4,6,8" OMP_NUM_THREADS=16 SGLANG_ENABLE_SPEC_V2=true python3 -m sglang.launch_server \
     --model-path ${MODEL} \
     --served-model-name ${SERVED_MODEL_NAME} \
     --context-length ${CONTEXT_LENGTH} \
@@ -32,10 +32,8 @@ OMP_NUM_THREADS=16 SGLANG_ENABLE_SPEC_V2=true python3 -m sglang.launch_server \
     --kv-cache-dtype bf16 \
     --quantization modelopt_fp4 \
     --cuda-graph-max-bs ${CUDA_GRAPH_MAX_BS} \
-    --cuda-graph-bs "[1,2,4,6,8]" \
-    --enable-chunked-prefill \
     --max-prefill-tokens=${CHUNKED_PREFILL_SIZE} \
     --disable-radix-cache \
-    --schedule-conservativeness 0.7 \ 
+    --schedule-conservativeness 0.7 \
     --preferred-sampling-params '{"temperature":1.0,"top_p":0.95,"top_k":40,"min_p":0.0}' \
     --trust-remote-code 
