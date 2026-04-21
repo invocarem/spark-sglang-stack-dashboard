@@ -13,7 +13,7 @@ TOOL_CALL_PARSER="minimax-m2"
 CUDA_GRAPH_MAX_BS=4
 
 # Launch the server with single device
-python3 -m sglang.launch_server \
+SGLANG_ENABLE_SPEC_V2=true python3 -m sglang.launch_server \
     --model-path ${MODEL} \
     --served-model-name ${SERVED_MODEL_NAME} \
     --model-loader-extra-config '{"enable_multithread_load": true, "num_threads": 4}' \
