@@ -10,6 +10,7 @@ HOST="0.0.0.0"
 PORT=30000
 ATTENTION_BACKEND="triton"
 TOOL_CALL_PARSER="minimax-m2"
+CUDA_GRAPH_MAX_BS=4
 
 # Launch the server with single device
 python3 -m sglang.launch_server \
@@ -28,4 +29,6 @@ python3 -m sglang.launch_server \
     --max-running-requests 2 \
     --kv-cache-dtype auto \
     --quantization modelopt_fp4 \
+    --disable-piecewise-cuda-graph \
+    --cuda-graph-max-bs ${CUDA_GRAPH_MAX_BS} \
     --trust-remote-code 
