@@ -26,4 +26,5 @@ python3 -m sglang.launch_server \
     --mem-fraction-static ${MEM_FRACTION_STATIC} \
     --max-total-tokens ${CONTEXT_LENGTH} \
     --max-running-requests 3 \
-    --kv-cache-dtype fp8_e4m3 
+    --kv-cache-dtype auto \
+    --quantization modelopt_fp4 
