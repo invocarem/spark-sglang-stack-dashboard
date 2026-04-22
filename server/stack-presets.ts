@@ -32,8 +32,8 @@ export const STACK_PRESETS: readonly StackPreset[] = [
     label: "LM.Sys SGLang (spark)",
     provider: "sglang",
     matchesScript: "containers/sglang/run-docker-openai.sh",
-    containerName: "sglang_node",
-    image: "lmsysorg/sglang:spark",
+    containerName: "sglang_node_nightly",
+    image: "lmsysorg/sglang:nightly-dev-20260422-1408d974",
     extraEnv: ["TIKTOKEN_ENCODINGS_BASE=/tiktoken_encodings"],
   }
  
