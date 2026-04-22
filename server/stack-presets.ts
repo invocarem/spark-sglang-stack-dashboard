@@ -33,7 +33,7 @@ export const STACK_PRESETS: readonly StackPreset[] = [
     provider: "sglang",
     matchesScript: "containers/sglang/run-docker-openai.sh",
     containerName: "sglang_node_nightly",
-    image: "lmsysorg/sglang:nightly-dev-20260422-1408d974",
+    image: "lmsysorg/sglang:nightly-dev-cu13-20260422-de962f32",
     extraEnv: ["TIKTOKEN_ENCODINGS_BASE=/tiktoken_encodings"],
   }
  
