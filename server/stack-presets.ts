@@ -28,15 +28,23 @@ export const STACK_PRESETS: readonly StackPreset[] = [
     extraEnv: [],
   },
   {
+    id: "lmsys_cu13",
+    label: "LM.Sys SGLang (cu13)",
+    provider: "sglang",
+    matchesScript: "containers/sglang/run-docker-openai.sh",
+    containerName: "sglang_node_cu13",
+    image: "lmsysorg/sglang:nightly-dev-cu13-20260423-0bee2113",
+    extraEnv: ["TIKTOKEN_ENCODINGS_BASE=/tiktoken_encodings"],
+  },
+{
     id: "lmsys_spark",
     label: "LM.Sys SGLang (spark)",
     provider: "sglang",
     matchesScript: "containers/sglang/run-docker-openai.sh",
-    containerName: "sglang_node_nightly",
-    image: "lmsysorg/sglang:nightly-dev-cu13-20260422-de962f32",
+    containerName: "sglang_node_spark",
+    image: "lmsysorg/sglang:spark",
     extraEnv: ["TIKTOKEN_ENCODINGS_BASE=/tiktoken_encodings"],
-  }
- 
+  } 
 ] as const;
 
 const PRESET_BY_ID = new Map(STACK_PRESETS.map((p) => [p.id, p]));
