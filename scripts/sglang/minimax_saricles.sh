@@ -11,6 +11,7 @@ PORT=30000
 ATTENTION_BACKEND="flashinfer"
 FP8_GEMM_BACKEND="cutlass"
 TOOL_CALL_PARSER="minimax-m2"
+REASONING_PARSER="minimax-append-think"
 CUDA_GRAPH_MAX_BS=4
 MAX_RUNNING_REQUESTS=4
 CHUNKED_PREFILL_SIZE=2048
@@ -27,7 +28,7 @@ OMP_NUM_THREADS=8 SGLANG_ENABLE_SPEC_V2=true python3 -m sglang.launch_server \
     --enable-metrics \
     --attention-backend ${ATTENTION_BACKEND} \
     --tool-call-parser ${TOOL_CALL_PARSER} \
-    --reasoning-parser minimax-m2-append-think \
+    --reasoning-parser ${REASONING_PARSER} \
     --mem-fraction-static ${MEM_FRACTION_STATIC} \
     --max-running-requests ${MAX_RUNNING_REQUESTS} \
     --kv-cache-dtype fp8_e4m3 \
