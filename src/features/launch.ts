@@ -18,7 +18,7 @@ import {
   setStoredStackLaunchMode,
   STACK_LAUNCH_MODE_EVENT,
 } from "../app/stack-launch-mode";
-import { getPreferredModel, setPreferredModel } from "../sglang/model-prefs";
+import { getPreferredModel, setPreferredModel, setPreferredModelPath } from "../sglang/model-prefs";
 import { pickPreferredContainer } from "./container-preferences";
 
 type ContainerRow = {
@@ -361,7 +361,7 @@ function setApplyModelButton(visible: boolean, modelLabel?: string): void {
   btnApplyModel.hidden = !visible;
   btnApplyModel.classList.toggle("hidden", !visible);
   if (visible && modelLabel) {
-    btnApplyModel.textContent = `Use “${modelLabel}” for Chat / Benchmark`;
+    btnApplyModel.textContent = `Use model “${modelLabel}” for Chat / Benchmark`;
   }
 }
 
@@ -435,6 +435,23 @@ function servedModelNameFromLaunchArgs(
   const pick = (pairs: LaunchArgPair[]): string | null => {
     for (const p of pairs) {
       if (p.key !== "--served-model-name") continue;
+      if (p.enabled === false) continue;
+      const v = p.value?.trim() ?? "";
+      if (v) return v;
+    }
+    return null;
+  };
+  return pick(argOverrides) ?? pick(scriptsById.get(scriptId)?.launchArgs ?? []);
+}
+
+/** Prefer explicit UI overrides; fall back to launch script defaults. */
+function modelPathFromLaunchArgs(
+  scriptId: string,
+  argOverrides: LaunchArgPair[],
+): string | null {
+  const pick = (pairs: LaunchArgPair[]): string | null => {
+    for (const p of pairs) {
+      if (p.key !== "--model-path" && p.key !== "--model") continue;
       if (p.enabled === false) continue;
       const v = p.value?.trim() ?? "";
       if (v) return v;
@@ -662,7 +679,7 @@ async function refreshLaunchStatus(): Promise<void> {
       if (lastServedModel && getPreferredModel().trim() !== lastServedModel) {
         setPreferredModel(lastServedModel);
         setScriptStatus(
-          `Model id updated to “${lastServedModel}” for Chat and Benchmark (matches running server).`,
+          `Model updated to “${lastServedModel}” for Chat and Benchmark (matches running server).`,
         );
       }
       const needsManualApply =
@@ -991,12 +1008,19 @@ async function runLaunchScript(): Promise<void> {
         ? " Launch args / cluster env applied."
         : "";
     let modelHint = "";
+    const modelPath = modelPathFromLaunchArgs(script, argOverrides);
+    if (modelPath) {
+      setPreferredModelPath(modelPath);
+    }
     if (getMonitorProvider() === "vllm") {
       const mid = servedModelNameFromLaunchArgs(script, argOverrides);
       if (mid) {
         setPreferredModel(mid);
-        modelHint = ` Model id set to “${mid}” for Chat and Benchmark.`;
+        modelHint = ` Model set to “${mid}” for Chat and Benchmark.`;
       }
+    }
+    if (modelPath) {
+      modelHint += ` Model path saved as “${modelPath}” for Tools Benchmark HF/tokenizer defaults.`;
     }
     setScriptStatus(
       `${body.message ?? "Started."}${overrideHint}${modelHint} Use the Logs tab (launch script log) to watch output while the model loads.`,
@@ -1014,7 +1038,7 @@ export function initStarter(): void {
   btnApplyModel?.addEventListener("click", () => {
     if (!lastServedModel) return;
     setPreferredModel(lastServedModel);
-    setScriptStatus(`Model id set to “${lastServedModel}” for Chat and Benchmark.`);
+    setScriptStatus(`Model set to “${lastServedModel}” for Chat and Benchmark.`);
   });
   selContainer?.addEventListener("change", () => {
     void refreshLaunchStatus();

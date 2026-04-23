@@ -185,7 +185,7 @@
               <p id="status-launch-detail" class="status status--meta" aria-live="polite" hidden></p>
               <div class="launch-apply-row">
                 <button type="button" id="btn-launch-apply-model" class="btn hidden" hidden>
-                  Use as Chat/Benchmark model id
+                  Use as Chat/Benchmark model
                 </button>
               </div>
               <p id="status-launch-script" class="status" aria-live="polite"></p>
@@ -193,16 +193,20 @@
           </section>
 
           <section class="panel panel-nested launch-model-section">
-            <h2>Chat &amp; Benchmark model id</h2>
-            <p class="launch-lead">
-              Must match <code>--served-model-name</code> from your launch script. Saved in this browser;
-              <strong>Refresh status</strong> on Starter syncs it to the running server’s model id when they differ.
-            </p>
-            <label class="field field-grow">
-              <span>Model id</span>
-              <input type="text" id="launch-model" autocomplete="off" placeholder="Same as --served-model-name"
-                aria-label="Preferred model id for chat and benchmark" />
-            </label>
+            <h2>Chat &amp; Benchmark model</h2>
+            <div class="row">
+              <label class="field field-grow">
+                <span>Model id</span>
+                <input type="text" id="launch-model" autocomplete="off" placeholder="Same as --served-model-name"
+                  aria-label="Preferred model id for chat and benchmark" />
+              </label>
+              <label class="field field-grow">
+                <span>Model path</span>
+                <input type="text" id="launch-model-path" autocomplete="off"
+                  placeholder="Same as --model-path / --model"
+                  aria-label="Preferred model path for benchmark hf/tokenizer" />
+              </label>
+            </div>
             <p id="launch-model-status" class="status" aria-live="polite"></p>
           </section>
         </div>
@@ -513,7 +517,7 @@
                     type="text"
                     id="input-bench-tokenizer"
                     autocomplete="off"
-                    value="Qwen/Qwen3.5-397B-A17B-GPTQ-Int4"
+                    placeholder="HF tokenizer repo"
                     aria-label="HF tokenizer repo"
                   />
                 </label>

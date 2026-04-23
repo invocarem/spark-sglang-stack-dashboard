@@ -5,7 +5,12 @@
 
 import { pickPreferredContainer } from "./container-preferences";
 import { getMonitorProvider, onMonitorProviderChange, withProviderQuery } from "../app/provider";
-import { getPreferredModel, onPreferredModelChange } from "../sglang/model-prefs";
+import {
+  getPreferredModel,
+  getPreferredModelPath,
+  onPreferredModelChange,
+  onPreferredModelPathChange,
+} from "../sglang/model-prefs";
 
 type ContainerRow = {
   ID: string;
@@ -247,6 +252,17 @@ function prefillBenchServedModelFromPrefs(): void {
     !m.startsWith("/")
   ) {
     inputBenchModel.value = m;
+  }
+}
+
+function prefillBenchModelPathFromPrefs(): void {
+  const p = getPreferredModelPath().trim();
+  if (!p || p.startsWith("/")) return;
+  if (inputBenchHfModel && !inputBenchHfModel.value.trim()) {
+    inputBenchHfModel.value = p;
+  }
+  if (inputBenchTokenizer && !inputBenchTokenizer.value.trim()) {
+    inputBenchTokenizer.value = p;
   }
 }
 
@@ -1143,6 +1159,7 @@ export function initDockerTools(): void {
       );
     } else if (mode === "benchmark") {
       prefillBenchServedModelFromPrefs();
+      prefillBenchModelPathFromPrefs();
       setDockerStatus(
         "Runs benchmark_sglang.py (sglang.bench_serving) in the container with your parameters. Output streams below.",
       );
@@ -1165,6 +1182,7 @@ export function initDockerTools(): void {
   prefillTransferModelDirFromPrefs();
   prefillDownloadModelIdFromPrefs();
   prefillBenchServedModelFromPrefs();
+  prefillBenchModelPathFromPrefs();
   onPreferredModelChange((model) => {
     const m = model.trim();
     if (inputTransferModelDir && !inputTransferModelDir.value.trim() && m.startsWith("/")) {
@@ -1185,6 +1203,16 @@ export function initDockerTools(): void {
       !m.startsWith("/")
     ) {
       inputBenchModel.value = m;
+    }
+  });
+  onPreferredModelPathChange((modelPath) => {
+    const p = modelPath.trim();
+    if (!p || p.startsWith("/")) return;
+    if (inputBenchHfModel && !inputBenchHfModel.value.trim()) {
+      inputBenchHfModel.value = p;
+    }
+    if (inputBenchTokenizer && !inputBenchTokenizer.value.trim()) {
+      inputBenchTokenizer.value = p;
     }
   });
   void loadTools();

@@ -50,8 +50,8 @@ DEFAULT_BASE = (
     or "http://127.0.0.1:30000"
 )
 DEFAULT_BACKEND = os.environ.get("BENCHMARK_BACKEND", "sglang-oai-chat")
-# Keep defaults aligned with the Qwen3.5-397B GPTQ launch scripts.
-DEFAULT_TOKENIZER = os.environ.get("BENCHMARK_TOKENIZER", "Qwen/Qwen3.5-397B-A17B-GPTQ-Int4")
+# Optional default tokenizer from env only.
+DEFAULT_TOKENIZER = os.environ.get("BENCHMARK_TOKENIZER", "").strip()
 
 _DATASETS_WITH_RANDOM_LEN = frozenset({"random", "random-ids", "image"})
 
@@ -116,10 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--tokenizer",
         default=DEFAULT_TOKENIZER,
-        help=(
-            "HF tokenizer for synthetic prompts (BENCHMARK_TOKENIZER). "
-            "Must be a real repo; default matches Qwen3.5-397B GPTQ."
-        ),
+        help="HF tokenizer for synthetic prompts (BENCHMARK_TOKENIZER).",
     )
     p.add_argument(
         "--extra-request-body",
@@ -136,9 +133,6 @@ def main() -> None:
 
     rest_extra, rest = pop_json_flag_from_argv(rest, "--extra-request-body", PROG)
 
-    tokenizer = args.tokenizer.strip() or DEFAULT_TOKENIZER
-    hf_for_bench = (args.hf_model or "").strip() or tokenizer
-
     served = (args.model or "").strip() or os.environ.get("BENCHMARK_SERVED_MODEL", "").strip()
     if not served:
         served = fetch_served_model_id(args.base_url) or ""
@@ -147,6 +141,24 @@ def main() -> None:
         print(
             f"{PROG}: could not resolve served model id. Set --model, BENCHMARK_SERVED_MODEL, "
             "or ensure GET {}/v1/models returns a model.".format(args.base_url.rstrip("/")),
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    tokenizer = args.tokenizer.strip() or DEFAULT_TOKENIZER
+    hf_for_bench = (args.hf_model or "").strip()
+    if not hf_for_bench and "/" in served:
+        # Common case: served model id is itself a HF repo id.
+        hf_for_bench = served
+    if not tokenizer:
+        tokenizer = hf_for_bench
+    if not hf_for_bench:
+        hf_for_bench = tokenizer
+
+    if not hf_for_bench:
+        print(
+            f"{PROG}: could not resolve HF model/tokenizer for bench_serving. "
+            "Set --hf-model or --tokenizer (or BENCHMARK_HF_MODEL / BENCHMARK_TOKENIZER).",
             file=sys.stderr,
         )
         raise SystemExit(2)
