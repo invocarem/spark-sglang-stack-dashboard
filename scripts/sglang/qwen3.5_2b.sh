@@ -20,7 +20,8 @@ SGLANG_DISABLE_MEM_CHECK=1 python3 -m sglang.launch_server \
     --host ${HOST} \
     --port ${PORT} \
     --enable-metrics \
-    --attention-backend ${ATTENTION_BACKEND} \
+    --attention-backend flashinfer \
+    --disable-cuda-graph \
     --tool-call-parser ${TOOL_CALL_PARSER} \
     --reasoning-parser qwen3 \
     --trust-remote-code
