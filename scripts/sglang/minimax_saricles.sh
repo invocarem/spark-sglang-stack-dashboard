@@ -35,6 +35,7 @@ OMP_NUM_THREADS=16 SGLANG_ENABLE_SPEC_V2=true python3 -m sglang.launch_server \
     --chunked-prefill-size ${CHUNKED_PREFILL_SIZE} \
     --max-prefill-tokens=${CHUNKED_PREFILL_SIZE} \
     --enable-flashinfer-allreduce-fusion \
+    --disable-piecewise-cuda-graph \
     --schedule-conservativeness 0.7 \
     --preferred-sampling-params '{"temperature":1.0,"top_p":0.95,"top_k":40,"min_p":0.0}' \
     --trust-remote-code 
