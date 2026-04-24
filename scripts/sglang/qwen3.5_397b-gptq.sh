@@ -11,7 +11,7 @@ MAX_RUNNING_REQUESTS=3
 TENSOR_PARALLEL=2
 HOST="0.0.0.0"
 PORT=30000
-ATTENTION_BACKEND="triton"
+ATTENTION_BACKEND="flashinfer"
 TOOL_CALL_PARSER="qwen3_coder"
 
 # --mamba-scheduler-strategy extra_buffer
@@ -31,9 +31,9 @@ SGLANG_ENABLE_SPEC_V2=true SGLANG_USE_AITER=1 sglang serve \
     --model-loader-extra-config '{"enable_multithread_load": true, "num_threads": 8}' \
     --attention-backend ${ATTENTION_BACKEND} \
     --tool-call-parser ${TOOL_CALL_PARSER} \
-    --load-format safetensors \
+    --load-format fastsafetensors \
     --reasoning-parser qwen3 \
-    --speculative-algorithm NEXTN \
+    --speculative-algorithm EAGLE \
     --speculative-num-steps 3 \
     --speculative-eagle-topk 1 \
     --speculative-num-draft-tokens 4 \
