@@ -31,7 +31,7 @@ SGLANG_ENABLE_SPEC_V2=true SGLANG_USE_AITER=1 sglang serve \
     --model-loader-extra-config '{"enable_multithread_load": true, "num_threads": 8}' \
     --attention-backend ${ATTENTION_BACKEND} \
     --tool-call-parser ${TOOL_CALL_PARSER} \
-    --load-format fastsafetensors \
+    --load-format safetensors \
     --reasoning-parser qwen3 \
     --speculative-algorithm EAGLE \
     --speculative-num-steps 3 \
@@ -42,7 +42,6 @@ SGLANG_ENABLE_SPEC_V2=true SGLANG_USE_AITER=1 sglang serve \
     --quantization moe_wna16 \
     --kv-cache-dtype fp8_e4m3 \
     --max-running-requests ${MAX_RUNNING_REQUESTS} \
-    --max-prefill-tokens=${CHUNKED_PREFILL_SIZE} \
     --enable-cache-report \
     --preferred-sampling-params '{"temperature":0.6,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":0.0,"repetition_penalty":1.0}' \
     --trust-remote-code \
