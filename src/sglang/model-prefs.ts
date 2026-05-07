@@ -6,6 +6,25 @@ const STORAGE_KEY = "sglang-monitor-preferred-model";
 const STORAGE_KEY_PATH = "sglang-monitor-preferred-model-path";
 const CHANGE_EVENT = "sglang-preferred-model";
 
+function normalizeToHfRepo(modelPath: string): string {
+  const raw = modelPath.trim();
+  if (!raw || !raw.startsWith("/")) return raw;
+
+  const parts = raw.split("/").filter(Boolean);
+  const hfIndex = parts.findIndex((p) => p.toLowerCase() === "hf");
+  if (hfIndex < 0 || hfIndex + 1 >= parts.length) return raw;
+
+  const suffix = parts.slice(hfIndex + 1);
+  if (suffix.length >= 2) return suffix.join("/");
+
+  const compact = suffix[0] ?? "";
+  const underscore = compact.indexOf("_");
+  if (underscore > 0 && underscore < compact.length - 1) {
+    return `${compact.slice(0, underscore)}/${compact.slice(underscore + 1)}`;
+  }
+  return compact || raw;
+}
+
 export function getPreferredModel(): string {
   try {
     return localStorage.getItem(STORAGE_KEY)?.trim() ?? "";
@@ -39,7 +58,7 @@ export function getPreferredModelPath(): string {
 }
 
 export function setPreferredModelPath(modelPath: string): void {
-  const v = modelPath.trim();
+  const v = normalizeToHfRepo(modelPath);
   try {
     if (v) {
       localStorage.setItem(STORAGE_KEY_PATH, v);

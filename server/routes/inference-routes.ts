@@ -6,6 +6,7 @@ import {
   getSglangBaseUrl,
   getSglangMetricsUrl,
   runSglangBenchmark,
+  runSglangTaskBenchmark,
 } from "../sglang.js";
 type ProviderId = "sglang" ;
 
@@ -78,6 +79,21 @@ async function handleMetrics(c: Context, provider: ProviderId) {
   return c.json({ ...result, provider });
 }
 
+async function handleTaskBenchmark(c: Context, provider: ProviderId) {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+  const result = await runSglangTaskBenchmark(body);
+  if (!result.ok) {
+    const status = result.status as ContentfulStatusCode;
+    return c.json({ error: result.error }, status);
+  }
+  return c.json(result);
+}
+
 export function registerInferenceRoutes(app: Hono): void {
   // Core routes.
   app.get("/api/config", (c) => {
@@ -92,6 +108,7 @@ export function registerInferenceRoutes(app: Hono): void {
   app.get("/api/metrics", (c) => handleMetrics(c, pickProvider(c)));
   app.post("/api/chat/completions", (c) => handleChatCompletions(c, pickProvider(c)));
   app.post("/api/benchmark", (c) => handleBenchmark(c, pickProvider(c)));
+  app.post("/api/benchmark/task", (c) => handleTaskBenchmark(c, pickProvider(c)));
 
   // Legacy aliases kept for compatibility while the frontend migrates.
   app.get("/api/sglang/config", (c) => {
@@ -105,4 +122,5 @@ export function registerInferenceRoutes(app: Hono): void {
   app.get("/api/sglang/metrics", (c) => handleMetrics(c, "sglang"));
   app.post("/api/sglang/chat/completions", (c) => handleChatCompletions(c, "sglang"));
   app.post("/api/sglang/benchmark", (c) => handleBenchmark(c, "sglang"));
+  app.post("/api/sglang/benchmark/task", (c) => handleTaskBenchmark(c, "sglang"));
 }

@@ -18,7 +18,7 @@ Input: JSONL (one JSON object per line). Fields:
 
 Env: TASK_BENCH_BASE_URL (default http://127.0.0.1:8000), TASK_BENCH_MODEL (served id;
 if unset, first id from GET /v1/models), TASK_BENCH_TEMPERATURE, TASK_BENCH_MAX_TOKENS,
-TASK_BENCH_TIMEOUT_SEC.
+TASK_BENCH_TIMEOUT_SEC, TASK_BENCH_PRESERVE_SEPARATE_REASONING, TASK_BENCH_PRESERVE_THINKING.
 
 Usage::
 
@@ -40,6 +40,11 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit, urlunsplit
 from typing import Any
+
+
+def env_truthy(name: str) -> bool:
+    raw = (os.environ.get(name) or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
 
 
 def _fetch_json(url: str, timeout: float) -> Any:
@@ -174,6 +179,13 @@ def chat_completion(
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
+    # Keep tool behavior close to dashboard task benchmark defaults:
+    # - merge reasoning into content for evaluator parsing
+    # - disable visible Qwen "thinking" text unless explicitly preserved
+    if not env_truthy("TASK_BENCH_PRESERVE_SEPARATE_REASONING"):
+        body["separate_reasoning"] = False
+    if not env_truthy("TASK_BENCH_PRESERVE_THINKING"):
+        body["chat_template_kwargs"] = {"enable_thinking": False}
     payload = json.dumps(body).encode()
     req = urllib.request.Request(
         url,

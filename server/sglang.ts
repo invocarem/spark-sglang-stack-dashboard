@@ -1,6 +1,9 @@
 /** Fetch Prometheus metrics from the SGLang HTTP server (host-published port). */
 
 import { assistantFromCompletionBody } from "../lib/openai-completion-text.js";
+import { findRepoRoot } from "./repo-root.js";
+import fs from "node:fs/promises";
+import path from "node:path";
 import {
   benchmarkDefaultMaxTokens,
   benchmarkPreserveSeparateReasoning,
@@ -328,6 +331,45 @@ export type SglangBenchmarkErr = {
   status: number;
 };
 
+type TaskChecker =
+  | { type: "regex"; pattern: string; flags?: string }
+  | { type: "contains"; value: string; case_insensitive?: boolean }
+  | { type: "contains_all"; values: string[]; case_insensitive?: boolean };
+
+type TaskCase = {
+  id: string;
+  category: string;
+  prompt: string;
+  system?: string;
+  checker: TaskChecker;
+};
+
+export type SglangTaskBenchmarkOk = {
+  ok: true;
+  model: string;
+  input: string;
+  wallTimeMs: number;
+  cases: number;
+  passed: number;
+  failed: number;
+  passRate: number;
+  byCategory: Record<string, { pass: number; fail: number }>;
+  results: Array<{
+    id: string;
+    category: string;
+    ok: boolean;
+    reason: string;
+    latencyMs: number;
+    preview?: string;
+  }>;
+};
+
+export type SglangTaskBenchmarkErr = {
+  ok: false;
+  error: string;
+  status: number;
+};
+
 function isBenchmarkBody(x: unknown): x is {
   model: string;
   message: string;
@@ -353,6 +395,101 @@ function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
   const idx = Math.ceil((p / 100) * sorted.length) - 1;
   return sorted[Math.max(0, Math.min(sorted.length - 1, idx))];
+}
+
+function isTaskBenchmarkBody(x: unknown): x is {
+  model: string;
+  input?: string;
+  temperature?: number;
+  max_tokens?: number;
+} {
+  if (typeof x !== "object" || x === null) return false;
+  const o = x as Record<string, unknown>;
+  if (typeof o.model !== "string" || !o.model.trim()) return false;
+  if (o.input !== undefined && typeof o.input !== "string") return false;
+  if (o.temperature !== undefined && (typeof o.temperature !== "number" || !Number.isFinite(o.temperature))) {
+    return false;
+  }
+  if (o.max_tokens !== undefined && (typeof o.max_tokens !== "number" || !Number.isFinite(o.max_tokens) || o.max_tokens <= 0)) {
+    return false;
+  }
+  return true;
+}
+
+function runTaskChecker(text: string, checker: TaskChecker): { ok: boolean; reason: string } {
+  if (checker.type === "regex") {
+    try {
+      const flags = typeof checker.flags === "string" && checker.flags.toUpperCase().includes("IGNORECASE")
+        ? "i"
+        : "";
+      const re = new RegExp(checker.pattern, flags);
+      return re.test(text)
+        ? { ok: true, reason: "regex ok" }
+        : { ok: false, reason: `regex did not match: ${JSON.stringify(checker.pattern)}` };
+    } catch (e) {
+      return { ok: false, reason: `invalid regex: ${e instanceof Error ? e.message : String(e)}` };
+    }
+  }
+  if (checker.type === "contains") {
+    const ci = checker.case_insensitive === true;
+    const hay = ci ? text.toLowerCase() : text;
+    const needle = ci ? checker.value.toLowerCase() : checker.value;
+    return hay.includes(needle)
+      ? { ok: true, reason: "contains ok" }
+      : { ok: false, reason: `missing substring: ${JSON.stringify(checker.value)}` };
+  }
+  const ci = checker.case_insensitive === true;
+  const hay = ci ? text.toLowerCase() : text;
+  for (const v of checker.values) {
+    const needle = ci ? v.toLowerCase() : v;
+    if (!hay.includes(needle)) {
+      return { ok: false, reason: `missing substring: ${JSON.stringify(v)}` };
+    }
+  }
+  return { ok: true, reason: "contains_all ok" };
+}
+
+function isTaskChecker(x: unknown): x is TaskChecker {
+  if (typeof x !== "object" || x === null) return false;
+  const o = x as Record<string, unknown>;
+  if (o.type === "regex") {
+    return typeof o.pattern === "string" && (o.flags === undefined || typeof o.flags === "string");
+  }
+  if (o.type === "contains") {
+    return typeof o.value === "string";
+  }
+  if (o.type === "contains_all") {
+    return Array.isArray(o.values) && o.values.every((v) => typeof v === "string");
+  }
+  return false;
+}
+
+function parseTaskBenchmarkJsonl(raw: string): TaskCase[] {
+  const rows: TaskCase[] = [];
+  const lines = raw.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]?.trim() ?? "";
+    if (!line || line.startsWith("#")) continue;
+    let row: unknown;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (typeof row !== "object" || row === null) continue;
+    const o = row as Record<string, unknown>;
+    if (typeof o.prompt !== "string" || !o.prompt.trim() || !isTaskChecker(o.checker)) {
+      continue;
+    }
+    rows.push({
+      id: typeof o.id === "string" ? o.id : `line-${i + 1}`,
+      category: typeof o.category === "string" && o.category.trim() ? o.category : "unknown",
+      prompt: o.prompt,
+      system: typeof o.system === "string" ? o.system : undefined,
+      checker: o.checker,
+    });
+  }
+  return rows;
 }
 
 /** Synthetic load against `POST /v1/chat/completions` (non-streaming). */
@@ -476,5 +613,103 @@ export async function runSglangBenchmark(
     throughputRps,
     errorSamples,
     sampleContent,
+  };
+}
+
+/** Task benchmark: run fixed JSONL tasks through chat completions and score with simple checkers. */
+export async function runSglangTaskBenchmark(
+  body: unknown,
+): Promise<SglangTaskBenchmarkOk | SglangTaskBenchmarkErr> {
+  if (!isTaskBenchmarkBody(body)) {
+    return {
+      ok: false,
+      status: 400,
+      error: "Expected JSON: model (string), optional input (relative path), optional temperature/max_tokens",
+    };
+  }
+  const repoRoot = findRepoRoot();
+  const relInput = (body.input?.trim() || "tools/task_benchmark_seed.jsonl").replace(/\\/g, "/");
+  const inputPath = path.resolve(repoRoot, relInput);
+  const safeRoot = path.resolve(repoRoot);
+  if (!inputPath.startsWith(safeRoot + path.sep) && inputPath !== safeRoot) {
+    return { ok: false, status: 400, error: "input must stay within repository root" };
+  }
+  let raw: string;
+  try {
+    raw = await fs.readFile(inputPath, "utf8");
+  } catch (e) {
+    return {
+      ok: false,
+      status: 400,
+      error: `Cannot read input file: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+  const cases = parseTaskBenchmarkJsonl(raw);
+  if (cases.length === 0) {
+    return { ok: false, status: 400, error: "No valid task cases found in input JSONL" };
+  }
+  const model = body.model.trim();
+  const temperature = typeof body.temperature === "number" ? body.temperature : 0.2;
+  const max_tokens = typeof body.max_tokens === "number" ? Math.floor(body.max_tokens) : 1024;
+  const results: SglangTaskBenchmarkOk["results"] = [];
+  const byCategory: Record<string, { pass: number; fail: number }> = {};
+  const wallStart = Date.now();
+
+  for (const tc of cases) {
+    const messages: Array<{ role: "system" | "user"; content: string }> = [];
+    if (typeof tc.system === "string" && tc.system.trim()) {
+      messages.push({ role: "system", content: tc.system.trim() });
+    }
+    messages.push({ role: "user", content: tc.prompt.trim() });
+    const t0 = Date.now();
+    const response = await forwardChatCompletions({
+      model,
+      messages,
+      temperature,
+      max_tokens,
+      separate_reasoning: false,
+      chat_template_kwargs: { enable_thinking: false },
+    });
+    const latencyMs = Date.now() - t0;
+    const bucket = byCategory[tc.category] ?? { pass: 0, fail: 0 };
+    byCategory[tc.category] = bucket;
+    if (!response.ok) {
+      bucket.fail += 1;
+      results.push({
+        id: tc.id,
+        category: tc.category,
+        ok: false,
+        reason: response.error,
+        latencyMs,
+      });
+      continue;
+    }
+    const text = assistantFromCompletionBody(response.body) ?? "";
+    const checked = runTaskChecker(text, tc.checker);
+    if (checked.ok) bucket.pass += 1;
+    else bucket.fail += 1;
+    results.push({
+      id: tc.id,
+      category: tc.category,
+      ok: checked.ok,
+      reason: checked.reason,
+      latencyMs,
+      preview: text.length > 400 ? `${text.slice(0, 400)}...` : text,
+    });
+  }
+
+  const passed = results.filter((r) => r.ok).length;
+  const failed = results.length - passed;
+  return {
+    ok: true,
+    model,
+    input: path.relative(repoRoot, inputPath).replace(/\\/g, "/"),
+    wallTimeMs: Date.now() - wallStart,
+    cases: results.length,
+    passed,
+    failed,
+    passRate: results.length > 0 ? Number((passed / results.length).toFixed(4)) : 0,
+    byCategory,
+    results,
   };
 }

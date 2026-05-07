@@ -260,7 +260,8 @@
                   <option value="diagnostics">Diagnostics shell</option>
                   <option value="transfer">Model transfer (NCCL)</option>
                   <option value="download">Download model (HF)</option>
-                  <option value="benchmark">Benchmark (bench_serving)</option>
+                  <option value="benchmark">Load Benchmark (throughput/latency)</option>
+                  <option value="benchmark_task">Task Benchmark (quality/pass-rate)</option>
                 </select>
               </label>
               <div id="docker-container-field" class="field">
@@ -410,7 +411,8 @@
                 Runs <code>python3 /workspace/tools/benchmark_sglang.py</code> in the container (wrapper around
                 <code>python3 -m sglang.bench_serving</code>). Point <strong>Base URL</strong> at your serving API
                 (defaults match in-container OpenAI on port 30000). Leave <strong>Served model</strong> empty to use
-                <code>GET /v1/models</code> when the server exposes it.
+                <code>GET /v1/models</code> when the server exposes it. Best for synthetic load testing
+                (<strong>throughput</strong>, <strong>latency</strong>, and stability under concurrency).
               </p>
               <div class="row">
                 <label class="field field-grow">
@@ -544,6 +546,76 @@
                 </label>
               </div>
             </div>
+            <div id="field-benchmark-task" class="hidden">
+              <p class="hint">
+                Runs <code>python3 /workspace/tools/task_benchmark.py</code> in the container.
+                This evaluates <strong>quality/pass-rate</strong> with JSONL checkers and prints a JSON summary.
+                Use this for task correctness/regression checks, not pure throughput.
+              </p>
+              <div class="row">
+                <label class="field field-grow">
+                  <span>Input JSONL</span>
+                  <input
+                    type="text"
+                    id="input-task-bench-input"
+                    autocomplete="off"
+                    value="/workspace/tools/task_benchmark_seed.jsonl"
+                    aria-label="Task benchmark input JSONL path"
+                  />
+                </label>
+                <label class="field field-grow">
+                  <span>Base URL</span>
+                  <input
+                    type="text"
+                    id="input-task-bench-base-url"
+                    autocomplete="off"
+                    value="http://127.0.0.1:30000"
+                    aria-label="Task benchmark API base URL"
+                  />
+                </label>
+                <label class="field field-grow">
+                  <span>Model (optional)</span>
+                  <input
+                    type="text"
+                    id="input-task-bench-model"
+                    autocomplete="off"
+                    placeholder="Optional served model id"
+                    aria-label="Task benchmark served model id"
+                  />
+                </label>
+              </div>
+              <div class="row">
+                <label class="field field-narrow">
+                  <span>Temperature</span>
+                  <input
+                    type="number"
+                    id="input-task-bench-temperature"
+                    step="0.1"
+                    value="0.2"
+                    aria-label="Task benchmark temperature"
+                  />
+                </label>
+                <label class="field field-narrow">
+                  <span>max_tokens</span>
+                  <input
+                    type="number"
+                    id="input-task-bench-max-tokens"
+                    min="1"
+                    value="1024"
+                    aria-label="Task benchmark max tokens"
+                  />
+                </label>
+                <label class="field">
+                  <span>Timeout</span>
+                  <select id="sel-task-bench-timeout" aria-label="Task benchmark timeout">
+                    <option value="900000">15 min</option>
+                    <option value="3600000" selected>1 h</option>
+                    <option value="14400000">4 h</option>
+                    <option value="86400000">24 h</option>
+                  </select>
+                </label>
+              </div>
+            </div>
             <label id="field-diag-command" class="field field-grow hidden">
               <span>Command (<code>bash -lc</code> inside container)</span>
               <textarea
@@ -603,6 +675,15 @@
         <div id="panel-benchmark" role="tabpanel" aria-labelledby="tab-benchmark" class="tab-panel hidden"
           data-panel="benchmark" hidden>
           <section class="panel panel-nested">
+            <div class="row">
+              <label class="field">
+                <span>Mode</span>
+                <select id="bench-mode" aria-label="Benchmark mode">
+                  <option value="load" selected>Load benchmark</option>
+                  <option value="task">Task benchmark</option>
+                </select>
+              </label>
+            </div>
             <p class="hint">
               Repeated non-streaming <code>POST /v1/chat/completions</code> via this app&rsquo;s API.
               Lower concurrency on shared machines. Compare with live <strong>SGLang metrics</strong>
@@ -617,12 +698,12 @@
                   aria-label="Benchmark model id" />
               </label>
             </div>
-            <label class="field field-grow">
+            <label class="field field-grow" id="bench-load-message-field">
               <span>Prompt (repeated per request)</span>
               <textarea id="bench-message" rows="3" placeholder="Short prompt for load test"
                 aria-label="Benchmark prompt"></textarea>
             </label>
-            <div class="row">
+            <div class="row" id="bench-load-controls">
               <label class="field field-narrow">
                 <span>Concurrency</span>
                 <input type="number" id="bench-concurrency" min="1" max="32" value="4" aria-label="Concurrency" />
@@ -635,13 +716,32 @@
                 <span>max_tokens (optional)</span>
                 <input type="number" id="bench-max-tokens" min="1" value="256" aria-label="max tokens (default 256 if cleared server-side)" />
               </label>
+            </div>
+            <div id="bench-task-controls" class="row hidden">
+              <label class="field field-grow">
+                <span>Input JSONL (repo-relative)</span>
+                <input type="text" id="bench-task-input" autocomplete="off" value="tools/task_benchmark_seed.jsonl"
+                  aria-label="Task benchmark input jsonl path" />
+              </label>
+              <label class="field field-narrow">
+                <span>Temperature</span>
+                <input type="number" id="bench-task-temperature" step="0.1" value="0.2" aria-label="Task benchmark temperature" />
+              </label>
+              <label class="field field-narrow">
+                <span>max_tokens</span>
+                <input type="number" id="bench-task-max-tokens" min="1" value="1024" aria-label="Task benchmark max tokens" />
+              </label>
+            </div>
+            <div class="row">
               <button type="button" id="bench-run" class="btn primary">Run benchmark</button>
             </div>
             <p id="bench-status" class="status" aria-live="polite"></p>
           </section>
           <section class="panel panel-nested">
             <h2>Results</h2>
+            <pre id="bench-diff" class="out out-short">No baseline yet. Run a benchmark first.</pre>
             <pre id="bench-results" class="out out-short">—</pre>
+            <pre id="bench-history" class="out out-short">No run history yet.</pre>
           </section>
         </div>
       </div>

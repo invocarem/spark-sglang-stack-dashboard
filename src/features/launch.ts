@@ -18,7 +18,12 @@ import {
   setStoredStackLaunchMode,
   STACK_LAUNCH_MODE_EVENT,
 } from "../app/stack-launch-mode";
-import { getPreferredModel, setPreferredModel, setPreferredModelPath } from "../sglang/model-prefs";
+import {
+  getPreferredModel,
+  getPreferredModelPath,
+  setPreferredModel,
+  setPreferredModelPath,
+} from "../sglang/model-prefs";
 import { pickPreferredContainer } from "./container-preferences";
 
 type ContainerRow = {
@@ -1011,6 +1016,10 @@ async function runLaunchScript(): Promise<void> {
     const modelPath = modelPathFromLaunchArgs(script, argOverrides);
     if (modelPath) {
       setPreferredModelPath(modelPath);
+      const savedPath = getPreferredModelPath();
+      if (savedPath) {
+        modelHint += ` Model path saved as “${savedPath}” for Tools Benchmark HF/tokenizer defaults.`;
+      }
     }
     if (getMonitorProvider() === "vllm") {
       const mid = servedModelNameFromLaunchArgs(script, argOverrides);
@@ -1018,9 +1027,6 @@ async function runLaunchScript(): Promise<void> {
         setPreferredModel(mid);
         modelHint = ` Model set to “${mid}” for Chat and Benchmark.`;
       }
-    }
-    if (modelPath) {
-      modelHint += ` Model path saved as “${modelPath}” for Tools Benchmark HF/tokenizer defaults.`;
     }
     setScriptStatus(
       `${body.message ?? "Started."}${overrideHint}${modelHint} Use the Logs tab (launch script log) to watch output while the model loads.`,

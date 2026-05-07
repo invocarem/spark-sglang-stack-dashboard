@@ -28,6 +28,15 @@ export const STACK_PRESETS: readonly StackPreset[] = [
     extraEnv: [],
   },
   {
+    id: "dgx_spark_new",
+    label: "SciTrera DGX Spark SGLang (0.5.11)",
+    provider: "sglang",
+    matchesScript: "containers/sglang/run-docker.sh",
+    containerName: "sglang_node_new",
+    image: "scitrera/dgx-spark-sglang:0.5.11",
+    extraEnv: [],
+  }, 
+  {
     id: "lmsys_cu13",
     label: "LM.Sys SGLang (cu13)",
     provider: "sglang",
@@ -36,15 +45,15 @@ export const STACK_PRESETS: readonly StackPreset[] = [
     image: "lmsysorg/sglang:nightly-dev-cu13-20260423-0bee2113",
     extraEnv: ["TIKTOKEN_ENCODINGS_BASE=/tiktoken_encodings"],
   },
-{
-    id: "lmsys_spark",
-    label: "LM.Sys SGLang (spark)",
+  {
+    id: "lmsys_deepseek",
+    label: "LM.Sys SGLang (deepseek)",
     provider: "sglang",
     matchesScript: "containers/sglang/run-docker-openai.sh",
-    containerName: "sglang_node_spark",
-    image: "lmsysorg/sglang:spark",
+    containerName: "sglang_node_deepseek",
+    image: "lmsysorg/sglang:deepseek-v4-grace-blackwell",
     extraEnv: ["TIKTOKEN_ENCODINGS_BASE=/tiktoken_encodings"],
-  } 
+  }
 ] as const;
 
 const PRESET_BY_ID = new Map(STACK_PRESETS.map((p) => [p.id, p]));

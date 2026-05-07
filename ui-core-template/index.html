@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SGLang Runtime UI Core</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body>
+  <div class="layout">
+    <header class="header">
+      <h1>SGLang Runtime UI</h1>
+      <p class="hint">Shared UI core: Tools, Metrics, Benchmark, Chat</p>
+    </header>
+
+    <div class="shell">
+      <div class="shell-main">
+        <nav class="tabs" role="tablist" aria-label="Main tools">
+          <button type="button" role="tab" id="tab-tools" aria-selected="true" aria-controls="panel-tools">Tools</button>
+          <button type="button" role="tab" id="tab-metrics" aria-selected="false" aria-controls="panel-metrics">Metrics</button>
+          <button type="button" role="tab" id="tab-benchmark" aria-selected="false" aria-controls="panel-benchmark">Benchmark</button>
+        </nav>
+
+        <div id="panel-tools" role="tabpanel" aria-labelledby="tab-tools" class="tab-panel">
+          <section class="panel panel-nested">
+            <h2>Tools</h2>
+            <p class="hint">Backend-defined tools runner. Wire `/api/tools/definitions` and `/api/tools/run` to enable this panel.</p>
+            <div class="row">
+              <label class="field field-grow">
+                <span>Tool</span>
+                <select id="tools-select"></select>
+              </label>
+              <button type="button" id="tools-run" class="btn primary">Run tool</button>
+            </div>
+            <label class="field field-grow">
+              <span>Args JSON</span>
+              <textarea id="tools-args" rows="4" placeholder='{"example":"value"}'></textarea>
+            </label>
+            <p id="tools-status" class="status" aria-live="polite"></p>
+          </section>
+          <section class="panel panel-nested">
+            <h2>Output</h2>
+            <pre id="tools-output" class="out out-short">No output yet.</pre>
+          </section>
+        </div>
+
+        <div id="panel-metrics" role="tabpanel" aria-labelledby="tab-metrics" class="tab-panel hidden" hidden>
+          <section class="panel panel-nested">
+            <p id="metrics-config" class="config-line"></p>
+            <div class="row">
+              <button type="button" id="btn-metrics-refresh" class="btn primary">Refresh metrics</button>
+              <label class="field">
+                <span>Auto-refresh</span>
+                <select id="sel-metrics-interval">
+                  <option value="0">Off</option>
+                  <option value="3000">Every 3 s</option>
+                  <option value="10000" selected>Every 10 s</option>
+                  <option value="30000">Every 30 s</option>
+                </select>
+              </label>
+            </div>
+            <p id="status-metrics" class="status" aria-live="polite"></p>
+            <pre id="metrics-highlights" class="out out-short">Open this tab to load metrics.</pre>
+            <label class="checkbox-row">
+              <input type="checkbox" id="chk-metrics-raw" />
+              <span>Show raw text</span>
+            </label>
+            <pre id="metrics-raw" class="out hidden">—</pre>
+          </section>
+        </div>
+
+        <div id="panel-benchmark" role="tabpanel" aria-labelledby="tab-benchmark" class="tab-panel hidden" hidden>
+          <section class="panel panel-nested">
+            <div class="row">
+              <label class="field">
+                <span>Mode</span>
+                <select id="bench-mode">
+                  <option value="load" selected>Load benchmark</option>
+                  <option value="task">Task benchmark</option>
+                </select>
+              </label>
+            </div>
+            <div class="row">
+              <label class="field field-grow">
+                <span>Model</span>
+                <input type="text" id="bench-model" placeholder="Served model id" />
+              </label>
+            </div>
+            <label class="field field-grow" id="bench-load-message-field">
+              <span>Prompt</span>
+              <textarea id="bench-message" rows="3" placeholder="Prompt for load test"></textarea>
+            </label>
+            <div class="row" id="bench-load-controls">
+              <label class="field field-narrow">
+                <span>Concurrency</span>
+                <input type="number" id="bench-concurrency" min="1" value="4" />
+              </label>
+              <label class="field field-narrow">
+                <span>Total requests</span>
+                <input type="number" id="bench-requests" min="1" value="20" />
+              </label>
+              <label class="field field-narrow">
+                <span>max_tokens</span>
+                <input type="number" id="bench-max-tokens" min="1" value="256" />
+              </label>
+            </div>
+            <div id="bench-task-controls" class="row hidden">
+              <label class="field field-grow">
+                <span>Input JSONL path</span>
+                <input type="text" id="bench-task-input" value="tools/task_benchmark_seed.jsonl" />
+              </label>
+              <label class="field field-narrow">
+                <span>Temperature</span>
+                <input type="number" id="bench-task-temperature" step="0.1" value="0.2" />
+              </label>
+              <label class="field field-narrow">
+                <span>max_tokens</span>
+                <input type="number" id="bench-task-max-tokens" min="1" value="1024" />
+              </label>
+            </div>
+            <button type="button" id="bench-run" class="btn primary">Run benchmark</button>
+            <p id="bench-status" class="status"></p>
+          </section>
+          <section class="panel panel-nested">
+            <h2>Results</h2>
+            <pre id="bench-results" class="out out-short">No runs yet.</pre>
+          </section>
+        </div>
+      </div>
+
+      <aside class="chat-aside" aria-label="Chat playground">
+        <h2 class="chat-aside__title">Chat</h2>
+        <p class="hint chat-aside__hint">Uses `POST /api/chat/completions`.</p>
+        <label class="field field-chat-model">
+          <span>Model</span>
+          <input type="text" id="chat-model" placeholder="Served model id" />
+        </label>
+        <div id="chat-messages" class="chat-messages" role="log" aria-live="polite"></div>
+        <label class="field field-chat-input">
+          <span>Message</span>
+          <textarea id="chat-input" rows="3" placeholder="Enter to send, Shift+Enter newline"></textarea>
+        </label>
+        <div class="row chat-actions">
+          <button type="button" id="chat-send" class="btn primary">Send</button>
+          <button type="button" id="chat-clear" class="btn">Clear</button>
+        </div>
+        <p id="chat-status" class="status chat-status"></p>
+      </aside>
+    </div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

@@ -119,6 +119,7 @@ const inputDownloadModelId = document.querySelector<HTMLInputElement>("#input-do
 const inputDownloadSaveDir = document.querySelector<HTMLInputElement>("#input-download-save-dir");
 const selDownloadTimeout = document.querySelector<HTMLSelectElement>("#sel-download-timeout");
 const fieldBenchmark = document.querySelector<HTMLDivElement>("#field-benchmark");
+const fieldBenchmarkTask = document.querySelector<HTMLDivElement>("#field-benchmark-task");
 const inputBenchBaseUrl = document.querySelector<HTMLInputElement>("#input-bench-base-url");
 const inputBenchBackend = document.querySelector<HTMLInputElement>("#input-bench-backend");
 const inputBenchDataset = document.querySelector<HTMLInputElement>("#input-bench-dataset");
@@ -131,6 +132,12 @@ const inputBenchHfModel = document.querySelector<HTMLInputElement>("#input-bench
 const inputBenchTokenizer = document.querySelector<HTMLInputElement>("#input-bench-tokenizer");
 const textareaBenchExtraBody = document.querySelector<HTMLTextAreaElement>("#textarea-bench-extra-body");
 const selBenchTimeout = document.querySelector<HTMLSelectElement>("#sel-bench-timeout");
+const inputTaskBenchInput = document.querySelector<HTMLInputElement>("#input-task-bench-input");
+const inputTaskBenchBaseUrl = document.querySelector<HTMLInputElement>("#input-task-bench-base-url");
+const inputTaskBenchModel = document.querySelector<HTMLInputElement>("#input-task-bench-model");
+const inputTaskBenchTemperature = document.querySelector<HTMLInputElement>("#input-task-bench-temperature");
+const inputTaskBenchMaxTokens = document.querySelector<HTMLInputElement>("#input-task-bench-max-tokens");
+const selTaskBenchTimeout = document.querySelector<HTMLSelectElement>("#sel-task-bench-timeout");
 const btnRun = document.querySelector<HTMLButtonElement>("#btn-run");
 const containerField = document.querySelector<HTMLDivElement>("#docker-container-field");
 const statusDocker = document.querySelector<HTMLParagraphElement>("#status-docker");
@@ -152,7 +159,7 @@ function prettyJson(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
-type ToolsMode = "tools" | "diagnostics" | "transfer" | "download" | "benchmark";
+type ToolsMode = "tools" | "diagnostics" | "transfer" | "download" | "benchmark" | "benchmark_task";
 
 function getToolsMode(): ToolsMode {
   const v = selMode?.value;
@@ -160,6 +167,7 @@ function getToolsMode(): ToolsMode {
   if (v === "transfer") return "transfer";
   if (v === "download") return "download";
   if (v === "benchmark") return "benchmark";
+  if (v === "benchmark_task") return "benchmark_task";
   return "tools";
 }
 
@@ -179,6 +187,10 @@ function isBenchmarkMode(): boolean {
   return getToolsMode() === "benchmark";
 }
 
+function isBenchmarkTaskMode(): boolean {
+  return getToolsMode() === "benchmark_task";
+}
+
 function syncTransferRoleSubfields(): void {
   const worker = selTransferRole?.value === "worker";
   fieldTransferWorkerSrc?.classList.toggle("hidden", !worker);
@@ -190,9 +202,10 @@ function setToolsModeUI(mode: ToolsMode): void {
   const transfer = mode === "transfer";
   const download = mode === "download";
   const benchmark = mode === "benchmark";
+  const benchmarkTask = mode === "benchmark_task";
   const tools = mode === "tools";
 
-  fieldToolSelect?.classList.toggle("hidden", diagnostics || transfer || download || benchmark);
+  fieldToolSelect?.classList.toggle("hidden", diagnostics || transfer || download || benchmark || benchmarkTask);
   fieldDiagPreset?.classList.toggle("hidden", !diagnostics);
   fieldDiagCommand?.classList.toggle("hidden", !diagnostics);
   fieldDiagTimeout?.classList.toggle("hidden", !diagnostics);
@@ -200,6 +213,7 @@ function setToolsModeUI(mode: ToolsMode): void {
   fieldTransferExtra?.classList.toggle("hidden", !transfer);
   fieldDownload?.classList.toggle("hidden", !download);
   fieldBenchmark?.classList.toggle("hidden", !benchmark);
+  fieldBenchmarkTask?.classList.toggle("hidden", !benchmarkTask);
 
   if (tools) {
     syncPipeProbeVisibility();
@@ -213,7 +227,8 @@ function setToolsModeUI(mode: ToolsMode): void {
   if (!btnRun) return;
   if (transfer) btnRun.textContent = "Start transfer";
   else if (download) btnRun.textContent = "Download model";
-  else if (benchmark) btnRun.textContent = "Run benchmark";
+  else if (benchmark) btnRun.textContent = "Run load benchmark";
+  else if (benchmarkTask) btnRun.textContent = "Run task benchmark";
   else if (diagnostics) btnRun.textContent = "Run diagnostics";
   else btnRun.textContent = "Run";
 }
@@ -266,6 +281,18 @@ function prefillBenchModelPathFromPrefs(): void {
   }
 }
 
+function prefillTaskBenchModelFromPrefs(): void {
+  const m = getPreferredModel().trim();
+  if (
+    inputTaskBenchModel &&
+    !inputTaskBenchModel.value.trim() &&
+    m.includes("/") &&
+    !m.startsWith("/")
+  ) {
+    inputTaskBenchModel.value = m;
+  }
+}
+
 function formatProbeResponse(body: Record<string, unknown>): string {
   if (typeof body.error === "string" && body.error) {
     return prettyJson(body);
@@ -285,6 +312,65 @@ function formatProbeResponse(body: Record<string, unknown>): string {
     return parts.join("\n");
   }
   return prettyJson(body);
+}
+
+function formatTaskBenchmarkSummary(data: {
+  model?: unknown;
+  input?: unknown;
+  wall_ms?: unknown;
+  cases?: unknown;
+  passed?: unknown;
+  failed?: unknown;
+  pass_rate?: unknown;
+  by_category?: unknown;
+  results?: unknown;
+}): string {
+  const model = typeof data.model === "string" ? data.model : "(unknown)";
+  const input = typeof data.input === "string" ? data.input : "(unknown)";
+  const wallMs = typeof data.wall_ms === "number" ? data.wall_ms : 0;
+  const cases = typeof data.cases === "number" ? data.cases : 0;
+  const passed = typeof data.passed === "number" ? data.passed : 0;
+  const failed = typeof data.failed === "number" ? data.failed : 0;
+  const passRate = typeof data.pass_rate === "number" ? data.pass_rate : 0;
+  const byCategory =
+    typeof data.by_category === "object" && data.by_category !== null
+      ? (data.by_category as Record<string, { pass?: unknown; fail?: unknown }>)
+      : {};
+  const results = Array.isArray(data.results)
+    ? (data.results as Array<Record<string, unknown>>)
+    : [];
+
+  const lines: string[] = [
+    `Model: ${model}`,
+    `Input: ${input}`,
+    `Wall time: ${wallMs} ms`,
+    `Cases: ${cases} · Passed: ${passed} · Failed: ${failed}`,
+    `Pass rate: ${(passRate * 100).toFixed(2)}%`,
+    "",
+    "By category:",
+  ];
+  const cats = Object.entries(byCategory);
+  if (cats.length === 0) {
+    lines.push("(none)");
+  } else {
+    for (const [name, v] of cats) {
+      const p = typeof v.pass === "number" ? v.pass : 0;
+      const f = typeof v.fail === "number" ? v.fail : 0;
+      lines.push(`${name}: ${p} pass / ${f} fail`);
+    }
+  }
+
+  const failedRows = results.filter((r) => r.ok !== true).slice(0, 10);
+  if (failedRows.length > 0) {
+    lines.push("", "Failed samples:");
+    for (const row of failedRows) {
+      const id = typeof row.id === "string" ? row.id : "(unknown)";
+      const category = typeof row.category === "string" ? row.category : "unknown";
+      const reason = typeof row.reason === "string" ? row.reason : "failed";
+      lines.push(`- ${id} [${category}] ${reason}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 async function loadTools(): Promise<void> {
@@ -479,6 +565,8 @@ async function runTool(): Promise<void> {
       const decoder = new TextDecoder();
       let buffer = "";
       let outAcc = "";
+      let stdoutAcc = "";
+      let stderrAcc = "";
       let endEvent: {
         exitCode: number | null;
         timedOut: boolean;
@@ -511,6 +599,8 @@ async function runTool(): Promise<void> {
           }
           if (ev.kind === "chunk" && typeof ev.text === "string") {
             outAcc += ev.text;
+            if (ev.stream === "stdout") stdoutAcc += ev.text;
+            if (ev.stream === "stderr") stderrAcc += ev.text;
             outEl.textContent = normalizeProbeText(outAcc).trimEnd() || "…";
           } else if (ev.kind === "end") {
             endEvent = {
@@ -552,7 +642,32 @@ async function runTool(): Promise<void> {
         }
       }
 
-      outEl.textContent = normalizeProbeText(outAcc).trim() || "(No output.)";
+      const stdoutTrim = stdoutAcc.trim();
+      let rendered = "";
+      if (stdoutTrim) {
+        try {
+          const parsed = JSON.parse(stdoutTrim) as {
+            model?: unknown;
+            input?: unknown;
+            wall_ms?: unknown;
+            cases?: unknown;
+            passed?: unknown;
+            failed?: unknown;
+            pass_rate?: unknown;
+            by_category?: unknown;
+            results?: unknown;
+          };
+          rendered = formatTaskBenchmarkSummary(parsed);
+        } catch {
+          rendered = normalizeProbeText(outAcc).trim() || "(No output.)";
+        }
+      } else {
+        rendered = normalizeProbeText(outAcc).trim() || "(No output.)";
+      }
+      if (stderrAcc.trim()) {
+        rendered = `${rendered}\n\n--- stderr ---\n${normalizeProbeText(stderrAcc).trim()}`;
+      }
+      outEl.textContent = rendered;
       if (outMetaEl && endEvent) {
         const metaLines = [
           `hostLog: ${hostLog || "—"}`,
@@ -980,6 +1095,166 @@ async function runTool(): Promise<void> {
     return;
   }
 
+  if (isBenchmarkTaskMode()) {
+    const input = inputTaskBenchInput?.value.trim() ?? "";
+    const baseUrl = inputTaskBenchBaseUrl?.value.trim() ?? "";
+    const model = inputTaskBenchModel?.value.trim() ?? "";
+    const temperatureRaw = Number(inputTaskBenchTemperature?.value ?? "0.2");
+    const maxTokensRaw = Number(inputTaskBenchMaxTokens?.value ?? "1024");
+    const timeoutMsRaw = Number(selTaskBenchTimeout?.value ?? 3_600_000);
+
+    if (!input) {
+      setDockerStatus("Enter task benchmark input JSONL path.", true);
+      return;
+    }
+    if (!baseUrl) {
+      setDockerStatus("Enter the API base URL (e.g. http://127.0.0.1:30000).", true);
+      return;
+    }
+    if (!Number.isFinite(temperatureRaw) || temperatureRaw < 0 || temperatureRaw > 100) {
+      setDockerStatus("Temperature must be between 0 and 100.", true);
+      return;
+    }
+    if (!Number.isFinite(maxTokensRaw) || maxTokensRaw < 1 || maxTokensRaw > 1_000_000) {
+      setDockerStatus("max_tokens must be between 1 and 1000000.", true);
+      return;
+    }
+
+    const timeoutMs =
+      Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0 ? Math.trunc(timeoutMsRaw) : 3_600_000;
+
+    setDockerStatus(`Running task_benchmark.py in ${container}…`);
+    btnRun.disabled = true;
+    outEl.textContent = "";
+    if (outMetaEl) {
+      outMetaEl.textContent = "—";
+      outMetaEl.classList.add("hidden");
+    }
+
+    const t0 = Date.now();
+    const tick = window.setInterval(() => {
+      const s = Math.floor((Date.now() - t0) / 1000);
+      setDockerStatus(`Task benchmark in ${container}… ${s}s (live output below)`);
+    }, 1000);
+
+    try {
+      const res = await fetch("/api/task-benchmark/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          container,
+          input,
+          baseUrl,
+          model,
+          temperature: temperatureRaw,
+          maxTokens: Math.trunc(maxTokensRaw),
+          timeoutMs,
+        }),
+      });
+
+      if (!res.ok) {
+        const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+        setDockerStatus(errBody.error ?? `Run failed (${res.status})`, true);
+        return;
+      }
+
+      const reader = res.body?.getReader();
+      if (!reader) {
+        setDockerStatus("No response body from server.", true);
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let outAcc = "";
+      let endEvent: {
+        exitCode: number | null;
+        timedOut: boolean;
+        truncated: boolean;
+        durationMs: number;
+      } | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let ev: {
+            kind?: string;
+            text?: string;
+            exitCode?: number | null;
+            timedOut?: boolean;
+            truncated?: boolean;
+            durationMs?: number;
+            message?: string;
+          };
+          try {
+            ev = JSON.parse(line) as typeof ev;
+          } catch {
+            continue;
+          }
+          if (ev.kind === "chunk" && typeof ev.text === "string") {
+            outAcc += ev.text;
+            outEl.textContent = normalizeProbeText(outAcc).trimEnd() || "…";
+          } else if (ev.kind === "end") {
+            endEvent = {
+              exitCode: ev.exitCode ?? null,
+              timedOut: ev.timedOut === true,
+              truncated: ev.truncated === true,
+              durationMs: typeof ev.durationMs === "number" ? ev.durationMs : 0,
+            };
+          } else if (ev.kind === "error" && typeof ev.message === "string") {
+            setDockerStatus(ev.message, true);
+            return;
+          }
+        }
+      }
+
+      outEl.textContent = normalizeProbeText(outAcc).trim() || "(No output.)";
+      if (outMetaEl && endEvent) {
+        const metaLines = [
+          `container: ${container}`,
+          `input: ${input}`,
+          `baseUrl: ${baseUrl}`,
+          `exitCode: ${String(endEvent.exitCode ?? "null")}`,
+          `durationMs: ${String(endEvent.durationMs ?? "n/a")}`,
+          `timedOut: ${endEvent.timedOut ? "yes" : "no"}`,
+          `truncated: ${endEvent.truncated ? "yes" : "no"}`,
+        ];
+        outMetaEl.textContent = metaLines.join("\n");
+        outMetaEl.classList.remove("hidden");
+      }
+
+      if (!endEvent) {
+        setDockerStatus("Task benchmark ended without status from server.", true);
+        return;
+      }
+      const ok = endEvent.exitCode === 0 && !endEvent.timedOut;
+      setDockerStatus(
+        endEvent.timedOut
+          ? "Task benchmark timed out (increase timeout or reduce case complexity)."
+          : ok
+            ? "Task benchmark finished."
+            : "Task benchmark finished with errors (see output).",
+        endEvent.timedOut || !ok,
+      );
+    } catch (e) {
+      outEl.textContent = "";
+      if (outMetaEl) {
+        outMetaEl.textContent = "—";
+        outMetaEl.classList.add("hidden");
+      }
+      setDockerStatus(e instanceof Error ? e.message : String(e), true);
+    } finally {
+      window.clearInterval(tick);
+      btnRun.disabled = false;
+    }
+    return;
+  }
+
   if (isDiagnosticsMode()) {
     const command = inputDiagCommand?.value.trim() ?? "";
     if (!command) {
@@ -1161,7 +1436,11 @@ export function initDockerTools(): void {
       prefillBenchServedModelFromPrefs();
       prefillBenchModelPathFromPrefs();
       setDockerStatus(
-        "Runs benchmark_sglang.py (sglang.bench_serving) in the container with your parameters. Output streams below.",
+        "Load benchmark: runs benchmark_sglang.py (sglang.bench_serving) in the container for throughput/latency testing. Output streams below.",
+      );
+    } else if (mode === "benchmark_task") {
+      setDockerStatus(
+        "Task benchmark: runs task_benchmark.py in the container (JSONL + checkers) and streams the quality/pass-rate report.",
       );
     } else {
       setDockerStatus("Structured tools enabled.");
@@ -1183,6 +1462,7 @@ export function initDockerTools(): void {
   prefillDownloadModelIdFromPrefs();
   prefillBenchServedModelFromPrefs();
   prefillBenchModelPathFromPrefs();
+  prefillTaskBenchModelFromPrefs();
   onPreferredModelChange((model) => {
     const m = model.trim();
     if (inputTransferModelDir && !inputTransferModelDir.value.trim() && m.startsWith("/")) {
@@ -1203,6 +1483,14 @@ export function initDockerTools(): void {
       !m.startsWith("/")
     ) {
       inputBenchModel.value = m;
+    }
+    if (
+      inputTaskBenchModel &&
+      !inputTaskBenchModel.value.trim() &&
+      m.includes("/") &&
+      !m.startsWith("/")
+    ) {
+      inputTaskBenchModel.value = m;
     }
   });
   onPreferredModelPathChange((modelPath) => {

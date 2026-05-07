@@ -1033,6 +1033,18 @@ export type BenchmarkSglangStreamEvent =
   | { kind: "chunk"; stream: "stdout" | "stderr"; text: string }
   | { kind: "end"; exitCode: number | null; timedOut: boolean; truncated: boolean; durationMs: number };
 
+export type TaskBenchmarkParams = {
+  input: string;
+  baseUrl: string;
+  model: string;
+  temperature: number;
+  maxTokens: number;
+};
+
+export type TaskBenchmarkStreamEvent =
+  | { kind: "chunk"; stream: "stdout" | "stderr"; text: string }
+  | { kind: "end"; exitCode: number | null; timedOut: boolean; truncated: boolean; durationMs: number };
+
 function validateBenchmarkHttpUrl(s: string): string | null {
   const t = s.trim();
   if (!t) return "Base URL is required";
@@ -1087,6 +1099,15 @@ function validateBenchmarkExtraRequestBodyJson(raw: string): string | null {
   }
 }
 
+function validateTaskBenchmarkInputPath(s: string): string | null {
+  const t = s.trim();
+  if (!t) return "Input JSONL path is required";
+  if (!t.startsWith("/")) return "Input JSONL path must be absolute inside container";
+  if (t.length > 4096) return "Input JSONL path is too long";
+  if (/[\n\r\0]/.test(t)) return "Input JSONL path contains invalid characters";
+  return null;
+}
+
 function benchmarkSglangDockerArgs(container: string, params: BenchmarkSglangParams): string[] {
   const envArgs = dockerExecToolEnvArgs();
   const scriptPath = `${WORKSPACE_TOOLS}/benchmark_sglang.py`;
@@ -1108,6 +1129,19 @@ function benchmarkSglangDockerArgs(container: string, params: BenchmarkSglangPar
   if (tok) args.push("--tokenizer", tok);
   const extra = params.extraRequestBody?.trim();
   if (extra) args.push("--extra-request-body", extra);
+  return args;
+}
+
+function taskBenchmarkDockerArgs(container: string, params: TaskBenchmarkParams): string[] {
+  const envArgs = dockerExecToolEnvArgs();
+  const scriptPath = `${WORKSPACE_TOOLS}/task_benchmark.py`;
+  const args: string[] = ["exec", "-i", ...envArgs, container, "python3", "-u", scriptPath];
+  args.push("--input", params.input.trim());
+  args.push("--base-url", params.baseUrl.trim());
+  const model = params.model.trim();
+  if (model) args.push("--model", model);
+  args.push("--temperature", String(params.temperature));
+  args.push("--max-tokens", String(params.maxTokens));
   return args;
 }
 
@@ -1155,6 +1189,113 @@ export async function streamBenchmarkSglangInContainer(
   );
 
   const args: string[] = benchmarkSglangDockerArgs(container, params);
+
+  await new Promise<void>((resolve, reject) => {
+    const started = Date.now();
+    const child = spawn("docker", args, {
+      windowsHide: true,
+      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+    });
+
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let truncated = false;
+    let timedOut = false;
+
+    const capAppend = (chunk: string, target: "stdout" | "stderr"): void => {
+      const bytes = Buffer.byteLength(chunk, "utf8");
+      if (target === "stdout") {
+        const remaining = maxOutputBytes - stdoutBytes;
+        if (remaining <= 0) {
+          truncated = true;
+          return;
+        }
+        if (bytes <= remaining) {
+          stdoutBytes += bytes;
+          emit({ kind: "chunk", stream: "stdout", text: chunk });
+        } else {
+          const partial = Buffer.from(chunk, "utf8").subarray(0, remaining).toString("utf8");
+          stdoutBytes += remaining;
+          truncated = true;
+          emit({ kind: "chunk", stream: "stdout", text: partial });
+        }
+        return;
+      }
+      const remaining = maxOutputBytes - stderrBytes;
+      if (remaining <= 0) {
+        truncated = true;
+        return;
+      }
+      if (bytes <= remaining) {
+        stderrBytes += bytes;
+        emit({ kind: "chunk", stream: "stderr", text: chunk });
+      } else {
+        const partial = Buffer.from(chunk, "utf8").subarray(0, remaining).toString("utf8");
+        stderrBytes += remaining;
+        truncated = true;
+        emit({ kind: "chunk", stream: "stderr", text: partial });
+      }
+    };
+
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => capAppend(chunk, "stdout"));
+    child.stderr?.on("data", (chunk: string) => capAppend(chunk, "stderr"));
+    child.on("error", reject);
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      emit({
+        kind: "end",
+        exitCode: code,
+        timedOut,
+        truncated,
+        durationMs: Date.now() - started,
+      });
+      resolve();
+    });
+  });
+}
+
+export async function streamTaskBenchmarkInContainer(
+  container: string,
+  params: TaskBenchmarkParams,
+  options: ModelTransferExecOptions,
+  emit: (event: TaskBenchmarkStreamEvent) => void,
+): Promise<void> {
+  assertSafeContainerName(container);
+
+  const errInput = validateTaskBenchmarkInputPath(params.input);
+  if (errInput) throw new Error(errInput);
+  const errUrl = validateBenchmarkHttpUrl(params.baseUrl);
+  if (errUrl) throw new Error(errUrl);
+  const errModel = validateOptionalServedModelId(params.model);
+  if (errModel) throw new Error(errModel);
+  if (!Number.isFinite(params.temperature) || params.temperature < 0) {
+    throw new Error("temperature must be >= 0");
+  }
+  if (!Number.isFinite(params.maxTokens) || params.maxTokens < 1 || params.maxTokens > 1_000_000) {
+    throw new Error("maxTokens must be between 1 and 1000000");
+  }
+
+  const timeoutMs = Math.max(
+    MODEL_TRANSFER_TIMEOUT_MIN_MS,
+    Math.min(
+      MODEL_TRANSFER_TIMEOUT_MAX_MS,
+      Math.trunc(options.timeoutMs ?? 3_600_000),
+    ),
+  );
+  const maxOutputBytes = Math.max(
+    1024,
+    Math.min(10_000_000, Math.trunc(options.maxOutputBytes ?? 5_000_000)),
+  );
+
+  const args: string[] = taskBenchmarkDockerArgs(container, params);
 
   await new Promise<void>((resolve, reject) => {
     const started = Date.now();
@@ -1327,6 +1468,58 @@ export function parseBenchmarkSglangRequest(body: Record<string, unknown>): Pars
       hfModel,
       tokenizer,
       extraRequestBody,
+    },
+  };
+}
+
+export type ParseTaskBenchmarkRequestResult =
+  | { ok: true; container: string; params: TaskBenchmarkParams; timeoutMs: number }
+  | { ok: false; error: string };
+
+export function parseTaskBenchmarkRequest(body: Record<string, unknown>): ParseTaskBenchmarkRequestResult {
+  const container = typeof body.container === "string" ? body.container.trim() : "";
+  if (!container) return { ok: false, error: "Missing container" };
+
+  const timeoutMsRaw = typeof body.timeoutMs === "number" ? body.timeoutMs : Number(body.timeoutMs);
+  const timeoutMs = Number.isFinite(timeoutMsRaw) && timeoutMsRaw > 0
+    ? Math.trunc(timeoutMsRaw)
+    : 3_600_000;
+  const cappedTimeout = Math.max(
+    MODEL_TRANSFER_TIMEOUT_MIN_MS,
+    Math.min(MODEL_TRANSFER_TIMEOUT_MAX_MS, timeoutMs),
+  );
+
+  const input = typeof body.input === "string" ? body.input : "";
+  const errInput = validateTaskBenchmarkInputPath(input);
+  if (errInput) return { ok: false, error: errInput };
+
+  const baseUrl = typeof body.baseUrl === "string" ? body.baseUrl : "";
+  const errUrl = validateBenchmarkHttpUrl(baseUrl);
+  if (errUrl) return { ok: false, error: errUrl };
+
+  const model = typeof body.model === "string" ? body.model : "";
+  const errModel = validateOptionalServedModelId(model);
+  if (errModel) return { ok: false, error: errModel };
+
+  const tempRaw = typeof body.temperature === "number" ? body.temperature : Number(body.temperature);
+  if (!Number.isFinite(tempRaw) || tempRaw < 0 || tempRaw > 100) {
+    return { ok: false, error: "temperature must be between 0 and 100" };
+  }
+  const maxTokensRaw = typeof body.maxTokens === "number" ? body.maxTokens : Number(body.maxTokens);
+  if (!Number.isFinite(maxTokensRaw) || maxTokensRaw < 1 || maxTokensRaw > 1_000_000) {
+    return { ok: false, error: "maxTokens must be between 1 and 1000000" };
+  }
+
+  return {
+    ok: true,
+    container,
+    timeoutMs: cappedTimeout,
+    params: {
+      input: input.trim(),
+      baseUrl: baseUrl.trim(),
+      model: model.trim(),
+      temperature: tempRaw,
+      maxTokens: Math.trunc(maxTokensRaw),
     },
   };
 }
